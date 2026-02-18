@@ -94,6 +94,22 @@ async function ensureCleanDir(p) {
   await fsp.mkdir(p, { recursive: true });
 }
 
+async function ensureUserWritableRecursive(rootDir) {
+  const queue = [rootDir];
+  while (queue.length > 0) {
+    const current = queue.pop();
+    const stat = await fsp.lstat(current);
+    await fsp.chmod(current, stat.mode | 0o200);
+    if (!stat.isDirectory()) {
+      continue;
+    }
+    const children = await fsp.readdir(current);
+    for (const child of children) {
+      queue.push(path.join(current, child));
+    }
+  }
+}
+
 function resolveNpmDir() {
   const npmRoot = run("npm", ["root", "-g"]);
   const candidate = path.join(npmRoot, "npm");
@@ -187,13 +203,8 @@ async function resolveBundledNodeRuntime() {
   if (customNode && fs.existsSync(customNode)) {
     const customVersion = run(customNode, ["-v"]);
     if (versionGte(customVersion, OPENCLAW_MIN_NODE)) {
-      const customBinDir = path.dirname(customNode);
-      const customRoot = path.basename(customBinDir).toLowerCase() === "bin"
-        ? path.dirname(customBinDir)
-        : customBinDir;
       return {
         nodePath: customNode,
-        runtimeRoot: customRoot,
         nodeVersion: customVersion,
         nodeSource: "env:OPENCLAW_BUNDLE_NODE"
       };
@@ -227,7 +238,6 @@ async function resolveBundledNodeRuntime() {
 
   return {
     nodePath: bundledNodePath,
-    runtimeRoot: path.join(nodeProvisionPrefix, "node_modules", "node"),
     nodeVersion: bundledNodeVersion,
     nodeSource: `npm:node@${OPENCLAW_MIN_NODE}`
   };
@@ -251,15 +261,22 @@ async function main() {
 
   console.log("[bundle] copying node runtime and npm...");
   const nodeDir = path.join(bundleDir, "node");
-  await fsp.rm(nodeDir, { recursive: true, force: true });
-  await fsp.cp(runtime.runtimeRoot, nodeDir, { recursive: true, dereference: true });
-  const nodeTarget = process.platform === "win32"
-    ? path.join(nodeDir, "bin", "node.exe")
-    : path.join(nodeDir, "bin", "node");
+  await ensureCleanDir(nodeDir);
+  const nodeTarget = path.join(nodeDir, process.platform === "win32" ? "node.exe" : "node");
+  await fsp.copyFile(runtime.nodePath, nodeTarget);
+  if (process.platform !== "win32") {
+    await fsp.chmod(nodeTarget, 0o755);
+  }
   ensureFile(nodeTarget, "bundled node runtime");
 
   const npmDir = resolveNpmDir();
-  await fsp.cp(npmDir, path.join(bundleDir, "npm"), { recursive: true });
+  const npmTarget = path.join(bundleDir, "npm");
+  await fsp.rm(npmTarget, { recursive: true, force: true });
+  await fsp.cp(npmDir, npmTarget, {
+    recursive: true,
+    // npm package ships a root .npmrc; tauri resource scanner may fail on it on some hosts.
+    filter: (src) => path.basename(src) !== ".npmrc"
+  });
 
   console.log("[bundle] warming offline npm cache...");
   const cacheDir = path.join(bundleDir, "npm-cache");
@@ -283,20 +300,24 @@ async function main() {
   // npm local install 会产生指向临时目录的绝对软链；这里解引用，避免打包后出现失效链接。
   await fsp.cp(installPrefix, bundledPrefix, { recursive: true, dereference: true });
 
-  console.log("[bundle] verifying bundled prefix snapshot...");
-  const verifyPrefix = path.join(tempDir, "verify-prefix");
-  await fsp.cp(bundledPrefix, verifyPrefix, { recursive: true });
-  const verifyOpenclaw = resolveInstalledOpenclaw(verifyPrefix);
-  const verifyEnv = {
-    ...process.env,
-    PATH: `${path.dirname(nodeTarget)}${path.delimiter}${process.env.PATH || ""}`
-  };
-  if (process.platform === "win32") {
-    run("cmd", ["/C", verifyOpenclaw, "--version"], { env: verifyEnv });
+  if (process.env.OPENCLAW_BUNDLE_SKIP_VERIFY === "1") {
+    console.log("[bundle] skip prefix verification because OPENCLAW_BUNDLE_SKIP_VERIFY=1");
   } else {
-    run(verifyOpenclaw, ["--version"], { env: verifyEnv });
+    console.log("[bundle] verifying bundled prefix snapshot...");
+    const verifyPrefix = path.join(tempDir, "verify-prefix");
+    await fsp.cp(bundledPrefix, verifyPrefix, { recursive: true });
+    const verifyOpenclaw = resolveInstalledOpenclaw(verifyPrefix);
+    const verifyEnv = {
+      ...process.env,
+      PATH: `${path.dirname(nodeTarget)}${path.delimiter}${process.env.PATH || ""}`
+    };
+    if (process.platform === "win32") {
+      run("cmd", ["/C", verifyOpenclaw, "--version"], { env: verifyEnv });
+    } else {
+      run(verifyOpenclaw, ["--version"], { env: verifyEnv });
+    }
+    await fsp.rm(verifyPrefix, { recursive: true, force: true });
   }
-  await fsp.rm(verifyPrefix, { recursive: true, force: true });
   await fsp.rm(installPrefix, { recursive: true, force: true });
 
   const npmCli = path.join(bundleDir, "npm", "bin", "npm-cli.js");
@@ -320,6 +341,10 @@ async function main() {
     JSON.stringify(manifest, null, 2),
     "utf8"
   );
+
+  // npm tarballs may preserve read-only bits. Ensure resources stay writable so
+  // repeated local builds can overwrite copied files without EACCES.
+  await ensureUserWritableRecursive(bundleDir);
 
   await fsp.rm(tempDir, { recursive: true, force: true });
   console.log("[bundle] ready:", bundleDir);

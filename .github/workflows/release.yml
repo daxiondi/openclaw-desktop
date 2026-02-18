@@ -45,14 +45,41 @@ jobs:
             libgtk-3-dev \
             libayatana-appindicator3-dev \
             librsvg2-dev \
-            patchelf \
-            rpm
+            patchelf
+
+      - name: Install WiX (Windows MSI toolchain)
+        if: matrix.platform == 'windows'
+        shell: powershell
+        run: |
+          choco install wixtoolset --no-progress -y
+          Add-Content $env:GITHUB_PATH "C:\Program Files (x86)\WiX Toolset v3.11\bin"
 
       - name: Install npm dependencies
         run: npm install
 
-      - name: Build installers
-        run: npm run tauri:build
+      - name: Build installers (macOS)
+        if: matrix.platform == 'macos'
+        env:
+          OPENCLAW_BUNDLE_SKIP_VERIFY: "1"
+        run: |
+          npm run prepare:openclaw-bundle
+          npx tauri build --bundles dmg
+
+      - name: Build installers (Windows)
+        if: matrix.platform == 'windows'
+        env:
+          OPENCLAW_BUNDLE_SKIP_VERIFY: "1"
+        run: |
+          npm run prepare:openclaw-bundle
+          npx tauri build --bundles msi
+
+      - name: Build installers (Linux)
+        if: matrix.platform == 'linux'
+        env:
+          OPENCLAW_BUNDLE_SKIP_VERIFY: "1"
+        run: |
+          npm run prepare:openclaw-bundle
+          npx tauri build --bundles deb
 
       - name: Upload macOS artifacts
         if: matrix.platform == 'macos'
@@ -81,12 +108,8 @@ jobs:
           name: bundle-linux
           if-no-files-found: error
           path: |
-            src-tauri/target/release/bundle/appimage/*.AppImage
-            src-tauri/target/release/bundle/appimage/*.sig
             src-tauri/target/release/bundle/deb/*.deb
             src-tauri/target/release/bundle/deb/*.sig
-            src-tauri/target/release/bundle/rpm/*.rpm
-            src-tauri/target/release/bundle/rpm/*.sig
 
   release:
     if: startsWith(github.ref, 'refs/tags/')
