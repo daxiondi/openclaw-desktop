@@ -69,9 +69,26 @@ jobs:
         if: matrix.platform == 'windows'
         env:
           OPENCLAW_BUNDLE_SKIP_VERIFY: "1"
+        shell: pwsh
         run: |
           npm run prepare:openclaw-bundle
-          npx tauri build --bundles nsis
+          $nsisLog = "windows-nsis-build.log"
+          npx tauri build --bundles nsis *>&1 | Tee-Object -FilePath $nsisLog
+          if ($LASTEXITCODE -ne 0) {
+            $tail = (Get-Content $nsisLog -Tail 120) -join "`n"
+            $escaped = $tail.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+            Write-Output "::warning title=NSIS build failed; fallback to portable zip::$escaped"
+
+            npx tauri build --no-bundle
+            if ($LASTEXITCODE -ne 0) {
+              throw "Windows no-bundle build failed."
+            }
+
+            $portableDir = "src-tauri/target/release/bundle/portable"
+            New-Item -ItemType Directory -Force -Path $portableDir | Out-Null
+            Copy-Item "src-tauri/target/release/openclaw-desktop.exe" "$portableDir/openclaw-desktop.exe" -Force
+            Compress-Archive -Path "$portableDir/openclaw-desktop.exe" -DestinationPath "$portableDir/openclaw-desktop-windows-portable.zip" -Force
+          }
 
       - name: Build installers (Linux)
         if: matrix.platform == 'linux'
@@ -99,6 +116,7 @@ jobs:
           if-no-files-found: error
           path: |
             src-tauri/target/release/bundle/nsis/*
+            src-tauri/target/release/bundle/portable/*.zip
 
       - name: Upload Linux artifacts
         if: matrix.platform == 'linux'
