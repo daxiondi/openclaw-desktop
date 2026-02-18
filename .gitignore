@@ -1,0 +1,7 @@
+node_modules
+dist
+.vite
+.DS_Store
+src-tauri/target
+src-tauri/bundle/resources/openclaw-bundle
+agents.md
