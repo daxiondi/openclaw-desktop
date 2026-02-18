@@ -183,30 +183,24 @@ function packOpenclawTarball() {
 }
 
 async function resolveBundledNodeRuntime() {
-  const hostVersion = run(process.execPath, ["-v"]);
-  if (versionGte(hostVersion, OPENCLAW_MIN_NODE)) {
-    return {
-      nodePath: process.execPath,
-      nodeVersion: hostVersion,
-      nodeSource: "host-node"
-    };
-  }
-
   const customNode = process.env.OPENCLAW_BUNDLE_NODE;
   if (customNode && fs.existsSync(customNode)) {
     const customVersion = run(customNode, ["-v"]);
     if (versionGte(customVersion, OPENCLAW_MIN_NODE)) {
+      const customBinDir = path.dirname(customNode);
+      const customRoot = path.basename(customBinDir).toLowerCase() === "bin"
+        ? path.dirname(customBinDir)
+        : customBinDir;
       return {
         nodePath: customNode,
+        runtimeRoot: customRoot,
         nodeVersion: customVersion,
         nodeSource: "env:OPENCLAW_BUNDLE_NODE"
       };
     }
   }
 
-  console.log(
-    `[bundle] host node ${hostVersion} < ${OPENCLAW_MIN_NODE}, provisioning node@${OPENCLAW_MIN_NODE}...`
-  );
+  console.log(`[bundle] provisioning portable node@${OPENCLAW_MIN_NODE} runtime...`);
   const nodeProvisionPrefix = path.join(tempDir, "node-runtime");
   await ensureCleanDir(nodeProvisionPrefix);
   run("npm", [
@@ -233,6 +227,7 @@ async function resolveBundledNodeRuntime() {
 
   return {
     nodePath: bundledNodePath,
+    runtimeRoot: path.join(nodeProvisionPrefix, "node_modules", "node"),
     nodeVersion: bundledNodeVersion,
     nodeSource: `npm:node@${OPENCLAW_MIN_NODE}`
   };
@@ -256,12 +251,12 @@ async function main() {
 
   console.log("[bundle] copying node runtime and npm...");
   const nodeDir = path.join(bundleDir, "node");
-  await fsp.mkdir(nodeDir, { recursive: true });
-  const nodeTarget = path.join(nodeDir, process.platform === "win32" ? "node.exe" : "node");
-  await fsp.copyFile(runtime.nodePath, nodeTarget);
-  if (process.platform !== "win32") {
-    await fsp.chmod(nodeTarget, 0o755);
-  }
+  await fsp.rm(nodeDir, { recursive: true, force: true });
+  await fsp.cp(runtime.runtimeRoot, nodeDir, { recursive: true, dereference: true });
+  const nodeTarget = process.platform === "win32"
+    ? path.join(nodeDir, "bin", "node.exe")
+    : path.join(nodeDir, "bin", "node");
+  ensureFile(nodeTarget, "bundled node runtime");
 
   const npmDir = resolveNpmDir();
   await fsp.cp(npmDir, path.join(bundleDir, "npm"), { recursive: true });

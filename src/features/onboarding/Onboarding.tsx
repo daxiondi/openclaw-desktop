@@ -148,9 +148,12 @@ export default function Onboarding({ onStatus, onLoginSuccess }: Props) {
     onStatus(t("status.loading"));
     try {
       const result = await openclawBridge.startOAuthLogin(providerId);
-      onStatus(`${t("status.oauth.start")}: ${result.commandHint}`);
       if (result.launched) {
+        onStatus(`${t("status.oauth.start")}: ${result.commandHint}`);
         onLoginSuccess();
+      } else {
+        const details = result.details?.trim();
+        onStatus(`${t("status.error")}: ${details || result.commandHint}`);
       }
     } catch (error) {
       onStatus(`${t("status.error")}: ${error instanceof Error ? error.message : String(error)}`);

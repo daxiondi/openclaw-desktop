@@ -75,13 +75,22 @@ function readCodexAuth() {
 
 function resolveBundledTools() {
   const bundledPrefix = path.join(bundleRoot, "prefix");
-  const nodePath = process.platform === "win32"
-    ? path.join(bundleRoot, "node", "node.exe")
-    : path.join(bundleRoot, "node", "node");
+  const nodeCandidates = process.platform === "win32"
+    ? [
+        path.join(bundleRoot, "node", "bin", "node.exe"),
+        path.join(bundleRoot, "node", "node.exe")
+      ]
+    : [
+        path.join(bundleRoot, "node", "bin", "node"),
+        path.join(bundleRoot, "node", "node")
+      ];
+  const nodePath = nodeCandidates.find((candidate) => fs.existsSync(candidate) && fs.statSync(candidate).isFile());
   const npmCli = path.join(bundleRoot, "npm", "bin", "npm-cli.js");
   const tgz = path.join(bundleRoot, "openclaw.tgz");
   const cache = path.join(bundleRoot, "npm-cache");
-  assertFile(nodePath, "bundled node");
+  if (!nodePath) {
+    throw new Error(`bundled node missing: ${nodeCandidates.join(", ")}`);
+  }
   assertFile(npmCli, "bundled npm cli");
   assertFile(tgz, "bundled openclaw.tgz");
   if (!fs.existsSync(cache) || !fs.statSync(cache).isDirectory()) {

@@ -25,6 +25,8 @@ const fallbackProviders: OAuthProvider[] = [
   { id: "copilot-proxy", label: "Copilot Proxy" }
 ];
 
+const fallbackProviderLabelMap = new Map(fallbackProviders.map((provider) => [provider.id, provider.label]));
+
 const fallbackLocalTools: LocalOAuthToolStatus[] = [
   {
     id: "codex",
@@ -63,14 +65,52 @@ function toHumanLabel(providerId: string): string {
     .join(" ");
 }
 
+function normalizeProviderId(rawProviderId: string): string {
+  const trimmed = rawProviderId.trim().toLowerCase();
+  if (!trimmed) {
+    return "";
+  }
+
+  const withoutCount = trimmed.replace(/\s+\(\d+\)$/u, "");
+  switch (withoutCount) {
+    case "codex":
+    case "openai-codex-cli":
+      return "openai-codex";
+    case "claude":
+    case "claude-code":
+      return "anthropic";
+    case "gemini":
+    case "google-gemini":
+      return "google-gemini-cli";
+    default:
+      return withoutCount;
+  }
+}
+
 export const openclawBridge: OpenClawBridge = {
   async listOAuthProviders() {
     if (!isTauriRuntime()) {
       return fallbackProviders;
     }
 
-    const providers = await invoke<string[]>("list_oauth_providers");
-    return providers.map((id) => ({ id, label: toHumanLabel(id) }));
+    const dynamicProviders = await invoke<string[]>("list_oauth_providers");
+    const orderedRawProviders = [...fallbackProviders.map((provider) => provider.id), ...dynamicProviders];
+    const seen = new Set<string>();
+    const dedupedProviders: OAuthProvider[] = [];
+
+    for (const rawProviderId of orderedRawProviders) {
+      const normalizedProviderId = normalizeProviderId(rawProviderId);
+      if (!normalizedProviderId || seen.has(normalizedProviderId)) {
+        continue;
+      }
+      seen.add(normalizedProviderId);
+      dedupedProviders.push({
+        id: normalizedProviderId,
+        label: fallbackProviderLabelMap.get(normalizedProviderId) ?? toHumanLabel(normalizedProviderId)
+      });
+    }
+
+    return dedupedProviders;
   },
 
   async detectLocalOAuthTools() {

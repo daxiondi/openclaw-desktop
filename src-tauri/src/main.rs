@@ -639,6 +639,39 @@ fn parse_onboard_auth_choices(help_text: &str) -> Vec<String> {
         .collect()
 }
 
+fn normalize_provider_id(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let mut normalized = trimmed.to_string();
+
+    // openclaw models status --json may return values like "qwen-portal (1)".
+    // Strip usage-count suffix to avoid duplicated provider entries in UI.
+    if trimmed.ends_with(')') {
+        if let Some(open_idx) = trimmed.rfind(" (") {
+            let digits = &trimmed[(open_idx + 2)..(trimmed.len() - 1)];
+            if !digits.is_empty() && digits.chars().all(|ch| ch.is_ascii_digit()) {
+                let stripped = trimmed[..open_idx].trim();
+                if stripped.is_empty() {
+                    return None;
+                }
+                normalized = stripped.to_string();
+            }
+        }
+    }
+
+    let lowered = normalized.to_ascii_lowercase();
+    let canonical = match lowered.as_str() {
+        "codex" | "openai-codex-cli" => "openai-codex",
+        "claude" | "claude-code" => "anthropic",
+        "gemini" | "google-gemini" => "google-gemini-cli",
+        _ => lowered.as_str(),
+    };
+    Some(canonical.to_string())
+}
+
 fn looks_like_oauth_provider(choice: &str) -> bool {
     if OPENCLAW_AUTH_CHOICE_NON_PROVIDER.contains(&choice) {
         return false;
@@ -663,6 +696,25 @@ fn looks_like_oauth_provider(choice: &str) -> bool {
             | "qwen-portal"
     ) || choice.starts_with("google-")
         || choice.ends_with("-portal")
+}
+
+fn resolve_provider_plugin_id(provider_id: &str) -> Option<&'static str> {
+    match provider_id {
+        "google-antigravity" => Some("google-antigravity-auth"),
+        "google-gemini-cli" => Some("google-gemini-cli-auth"),
+        "qwen-portal" => Some("qwen-portal-auth"),
+        "copilot-proxy" => Some("copilot-proxy"),
+        "minimax-portal" => Some("minimax-portal-auth"),
+        _ => None,
+    }
+}
+
+fn resolve_provider_default_model(provider_id: &str) -> Option<&'static str> {
+    match provider_id {
+        "qwen-portal" => Some("qwen-portal/coder-model"),
+        "minimax-portal" => Some("minimax-portal/MiniMax-M2.5"),
+        _ => None,
+    }
 }
 
 fn resolve_openclaw_binary() -> Option<String> {
@@ -743,6 +795,95 @@ fn summarize_output(stdout: &[u8], stderr: &[u8]) -> String {
     }
 }
 
+fn strip_ansi_and_controls(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut i = 0usize;
+    let mut out = String::with_capacity(text.len());
+
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == 0x1B {
+            i += 1;
+            if i < bytes.len() && bytes[i] == b'[' {
+                i += 1;
+                while i < bytes.len() {
+                    let c = bytes[i];
+                    i += 1;
+                    if (b'@'..=b'~').contains(&c) {
+                        break;
+                    }
+                }
+            } else {
+                while i < bytes.len() {
+                    let c = bytes[i];
+                    i += 1;
+                    if (b'@'..=b'~').contains(&c) {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+
+        if b == b'\r' {
+            i += 1;
+            continue;
+        }
+
+        let ch = b as char;
+        if ch.is_control() && ch != '\n' && ch != '\t' {
+            i += 1;
+            continue;
+        }
+
+        out.push(ch);
+        i += 1;
+    }
+
+    out
+}
+
+fn normalize_oauth_output(raw: &str) -> String {
+    let stripped = strip_ansi_and_controls(raw);
+    let mut lines = stripped
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(std::string::ToString::to_string)
+        .collect::<Vec<_>>();
+
+    if lines.is_empty() {
+        return String::new();
+    }
+
+    let single_char_lines = lines.iter().filter(|line| line.chars().count() == 1).count();
+    if lines.len() > 40 && single_char_lines * 100 / lines.len() >= 65 {
+        let merged = lines.join("");
+        lines = merged
+            .split('\n')
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(std::string::ToString::to_string)
+            .collect();
+    }
+
+    let normalized = lines.join("\n");
+    if normalized.len() > 1200 {
+        format!("{}...(truncated)", &normalized[..1200])
+    } else {
+        normalized
+    }
+}
+
+fn oauth_output_looks_failed(output: &str) -> bool {
+    let lower = output.to_ascii_lowercase();
+    lower.contains("canceled")
+        || lower.contains("cancelled")
+        || lower.contains("timed out")
+        || lower.contains("oauth failed")
+        || lower.contains("error:")
+}
+
 fn push_bootstrap_log(app: &tauri::AppHandle, logs: &mut Vec<String>, message: impl Into<String>) {
     let line = message.into();
     logs.push(line.clone());
@@ -757,6 +898,48 @@ fn run_command(binary: &str, args: &[&str]) -> Result<(bool, String), String> {
 
     let clipped = summarize_output(&output.stdout, &output.stderr);
     Ok((output.status.success(), clipped))
+}
+
+fn run_oauth_login_with_tty(binary: &str, provider_id: &str) -> Result<(bool, String), String> {
+    let args = ["models", "auth", "login", "--provider", provider_id];
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let output = Command::new("script")
+            .arg("-q")
+            .arg("/dev/null")
+            .arg(binary)
+            .args(args)
+            .output();
+
+        if let Ok(output) = output {
+            let clipped = normalize_oauth_output(&summarize_output(&output.stdout, &output.stderr));
+            return Ok((output.status.success(), clipped));
+        }
+    }
+
+    run_command(binary, &args)
+}
+
+fn provider_has_auth_profile(provider_id: &str) -> bool {
+    let auth_path = resolve_openclaw_auth_profiles_path();
+    let Ok(raw) = fs::read_to_string(auth_path) else {
+        return false;
+    };
+    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return false;
+    };
+    let Some(profiles) = parsed.get("profiles").and_then(|v| v.as_object()) else {
+        return false;
+    };
+
+    profiles.values().any(|profile| {
+        profile
+            .get("provider")
+            .and_then(|v| v.as_str())
+            .map(|provider| provider == provider_id)
+            .unwrap_or(false)
+    })
 }
 
 fn run_openclaw(
@@ -945,6 +1128,47 @@ fn resolve_prefix_openclaw_entry(prefix: &PathBuf) -> Option<PathBuf> {
     candidates.into_iter().find(|candidate| candidate.exists())
 }
 
+fn resolve_bundled_node_binary(bundle_dir: &PathBuf) -> Option<PathBuf> {
+    let candidates = if cfg!(target_os = "windows") {
+        vec![
+            bundle_dir.join("node").join("bin").join("node.exe"),
+            bundle_dir.join("node").join("node.exe"),
+        ]
+    } else {
+        vec![
+            bundle_dir.join("node").join("bin").join("node"),
+            bundle_dir.join("node").join("node"),
+        ]
+    };
+    candidates.into_iter().find(|candidate| candidate.exists())
+}
+
+fn resolve_node_runtime_root(node_binary: &PathBuf) -> Option<PathBuf> {
+    let parent = node_binary.parent()?;
+    let is_bin_dir = parent
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| name.eq_ignore_ascii_case("bin"))
+        .unwrap_or(false);
+    if is_bin_dir {
+        parent.parent().map(PathBuf::from)
+    } else {
+        Some(PathBuf::from(parent))
+    }
+}
+
+fn resolve_node_binary_in_runtime(runtime_dir: &PathBuf) -> Option<PathBuf> {
+    let candidates = if cfg!(target_os = "windows") {
+        vec![
+            runtime_dir.join("bin").join("node.exe"),
+            runtime_dir.join("node.exe"),
+        ]
+    } else {
+        vec![runtime_dir.join("bin").join("node"), runtime_dir.join("node")]
+    };
+    candidates.into_iter().find(|candidate| candidate.exists())
+}
+
 fn ensure_prefix_openclaw_launcher(
     prefix: &PathBuf,
     bundle_dir: &PathBuf,
@@ -956,34 +1180,34 @@ fn ensure_prefix_openclaw_launcher(
 
     let bin_dir = prefix.join("bin");
     fs::create_dir_all(&bin_dir).map_err(|err| err.to_string())?;
+    let node_runtime_dir = prefix.join("node-runtime");
+    let mut node_cmd = "node".to_string();
 
-    let bundled_node = if cfg!(target_os = "windows") {
-        bundle_dir.join("node").join("node.exe")
-    } else {
-        bundle_dir.join("node").join("node")
-    };
-    let node_target = if cfg!(target_os = "windows") {
-        bin_dir.join("node.exe")
-    } else {
-        bin_dir.join("node")
-    };
-
-    if bundled_node.exists() {
-        fs::copy(&bundled_node, &node_target).map_err(|err| err.to_string())?;
-        #[cfg(unix)]
-        {
-            fs::set_permissions(&node_target, fs::Permissions::from_mode(0o755))
-                .map_err(|err| err.to_string())?;
+    if let Some(bundled_node) = resolve_bundled_node_binary(bundle_dir) {
+        if let Some(runtime_root) = resolve_node_runtime_root(&bundled_node) {
+            if node_runtime_dir.exists() {
+                fs::remove_dir_all(&node_runtime_dir).map_err(|err| err.to_string())?;
+            }
+            copy_dir_with_native_tool(&runtime_root, &node_runtime_dir)?;
+            if let Some(node_target) = resolve_node_binary_in_runtime(&node_runtime_dir) {
+                #[cfg(unix)]
+                {
+                    fs::set_permissions(&node_target, fs::Permissions::from_mode(0o755))
+                        .map_err(|err| err.to_string())?;
+                }
+                node_cmd = node_target.to_string_lossy().to_string();
+            } else {
+                logs.push(
+                    "Bundled node runtime copied, but node binary was not found; launcher will use system node."
+                        .to_string(),
+                );
+            }
+        } else {
+            logs.push("Bundled node runtime path is invalid; launcher will use system node.".to_string());
         }
-    } else if !node_target.exists() {
+    } else {
         logs.push("Bundled node runtime missing; launcher will use system node.".to_string());
     }
-
-    let node_cmd = if node_target.exists() {
-        node_target.to_string_lossy().to_string()
-    } else {
-        "node".to_string()
-    };
 
     if cfg!(target_os = "windows") {
         let launcher = bin_dir.join("openclaw.cmd");
@@ -1083,16 +1307,15 @@ fn install_openclaw_from_bundle(
         );
     }
 
-    let node_bin = if cfg!(target_os = "windows") {
-        bundle_dir.join("node").join("node.exe")
-    } else {
-        bundle_dir.join("node").join("node")
+    let Some(node_bin) = resolve_bundled_node_binary(&bundle_dir) else {
+        push_bootstrap_log(app, logs, "Bundled payload is incomplete; skip offline install.");
+        return Ok(false);
     };
     let npm_cli = bundle_dir.join("npm").join("bin").join("npm-cli.js");
     let openclaw_tgz = bundle_dir.join("openclaw.tgz");
     let npm_cache = bundle_dir.join("npm-cache");
 
-    if !node_bin.exists() || !npm_cli.exists() || !openclaw_tgz.exists() || !npm_cache.exists() {
+    if !npm_cli.exists() || !openclaw_tgz.exists() || !npm_cache.exists() {
         push_bootstrap_log(app, logs, "Bundled payload is incomplete; skip offline install.");
         return Ok(false);
     }
@@ -1199,7 +1422,9 @@ async fn is_official_web_ready() -> bool {
 fn list_oauth_providers() -> Vec<String> {
     let mut providers = BTreeSet::new();
     for provider in FALLBACK_OAUTH_PROVIDERS {
-        providers.insert((*provider).to_string());
+        if let Some(normalized) = normalize_provider_id(provider) {
+            providers.insert(normalized);
+        }
     }
 
     let Some(binary) = resolve_openclaw_binary() else {
@@ -1218,7 +1443,9 @@ fn list_oauth_providers() -> Vec<String> {
                 if let Some(auth) = parsed.auth {
                     if let Some(known) = auth.providers_with_oauth {
                         for provider in known {
-                            providers.insert(provider);
+                            if let Some(normalized) = normalize_provider_id(&provider) {
+                                providers.insert(normalized);
+                            }
                         }
                     }
                 }
@@ -1232,7 +1459,9 @@ fn list_oauth_providers() -> Vec<String> {
             let text = String::from_utf8_lossy(&help.stdout).to_string();
             for choice in parse_onboard_auth_choices(&text) {
                 if looks_like_oauth_provider(&choice) {
-                    providers.insert(choice);
+                    if let Some(normalized) = normalize_provider_id(&choice) {
+                        providers.insert(normalized);
+                    }
                 }
             }
         }
@@ -1243,6 +1472,15 @@ fn list_oauth_providers() -> Vec<String> {
 
 #[tauri::command]
 fn start_oauth_login(provider_id: String) -> LoginResult {
+    let raw_provider_id = provider_id.trim().to_string();
+    let Some(provider_id) = normalize_provider_id(&raw_provider_id) else {
+        return LoginResult {
+            provider_id: raw_provider_id,
+            launched: false,
+            command_hint: "openclaw models auth login --provider <provider-id>".to_string(),
+            details: "Provider id is required.".to_string(),
+        };
+    };
     let command_hint = format!("openclaw models auth login --provider {}", provider_id);
 
     let Some(binary) = resolve_openclaw_binary() else {
@@ -1254,33 +1492,129 @@ fn start_oauth_login(provider_id: String) -> LoginResult {
         };
     };
 
-    let output = Command::new(binary)
-        .arg("models")
-        .arg("auth")
-        .arg("login")
-        .arg("--provider")
-        .arg(&provider_id)
-        .output();
+    let mut detail_lines: Vec<String> = Vec::new();
+    let had_profile_before = provider_has_auth_profile(&provider_id);
+    if let Some(plugin_id) = resolve_provider_plugin_id(&provider_id) {
+        match run_command(&binary, &["plugins", "enable", plugin_id]) {
+            Ok((true, _)) => {
+                detail_lines.push(format!("Provider plugin ensured: {}", plugin_id));
+            }
+            Ok((false, output)) => {
+                if output.is_empty() {
+                    detail_lines.push(format!(
+                        "WARN: failed to enable provider plugin {}.",
+                        plugin_id
+                    ));
+                } else {
+                    detail_lines.push(format!(
+                        "WARN: failed to enable provider plugin {}: {}",
+                        plugin_id, output
+                    ));
+                }
+            }
+            Err(err) => {
+                detail_lines.push(format!(
+                    "WARN: failed to enable provider plugin {}: {}",
+                    plugin_id, err
+                ));
+            }
+        }
+    }
+
+    let output = run_oauth_login_with_tty(&binary, &provider_id);
 
     match output {
-        Ok(out) if out.status.success() => LoginResult {
-            provider_id,
-            launched: true,
-            command_hint,
-            details: String::from_utf8_lossy(&out.stdout).to_string(),
-        },
-        Ok(out) => LoginResult {
-            provider_id,
-            launched: false,
-            command_hint,
-            details: String::from_utf8_lossy(&out.stderr).to_string(),
-        },
-        Err(err) => LoginResult {
-            provider_id,
-            launched: false,
-            command_hint,
-            details: err.to_string(),
-        },
+        Ok((true, output)) => {
+            let ready = provider_has_auth_profile(&provider_id);
+            let looks_failed = oauth_output_looks_failed(&output);
+            if ready && !looks_failed {
+                let mut model_switch_ok = true;
+                if let Some(model_id) = resolve_provider_default_model(&provider_id) {
+                    match run_command(&binary, &["models", "set", model_id]) {
+                        Ok((true, _)) => {
+                            detail_lines.push(format!("Default model switched to {}.", model_id));
+                        }
+                        Ok((false, set_output)) => {
+                            model_switch_ok = false;
+                            if set_output.trim().is_empty() {
+                                detail_lines.push(format!(
+                                    "OAuth completed, but failed to switch default model to {}.",
+                                    model_id
+                                ));
+                            } else {
+                                detail_lines.push(format!(
+                                    "OAuth completed, but failed to switch default model to {}: {}",
+                                    model_id, set_output
+                                ));
+                            }
+                        }
+                        Err(err) => {
+                            model_switch_ok = false;
+                            detail_lines.push(format!(
+                                "OAuth completed, but failed to switch default model to {}: {}",
+                                model_id, err
+                            ));
+                        }
+                    }
+                }
+
+                if !model_switch_ok {
+                    return LoginResult {
+                        provider_id,
+                        launched: false,
+                        command_hint,
+                        details: detail_lines.join("\n"),
+                    };
+                }
+
+                if had_profile_before {
+                    detail_lines.push("OAuth login completed (existing profile refreshed/reused).".to_string());
+                } else {
+                    detail_lines.push("OAuth login completed and provider auth is ready.".to_string());
+                }
+                LoginResult {
+                    provider_id,
+                    launched: true,
+                    command_hint,
+                    details: detail_lines.join("\n"),
+                }
+            } else {
+                detail_lines.push(
+                    "OAuth command finished, but provider auth profile was not ready.".to_string(),
+                );
+                if !output.trim().is_empty() {
+                    detail_lines.push(output);
+                }
+                LoginResult {
+                    provider_id,
+                    launched: false,
+                    command_hint,
+                    details: detail_lines.join("\n"),
+                }
+            }
+        }
+        Ok((false, output)) => {
+            if output.is_empty() {
+                detail_lines.push("OAuth login command failed.".to_string());
+            } else {
+                detail_lines.push(output);
+            }
+            LoginResult {
+                provider_id,
+                launched: false,
+                command_hint,
+                details: detail_lines.join("\n"),
+            }
+        }
+        Err(err) => {
+            detail_lines.push(err);
+            LoginResult {
+                provider_id,
+                launched: false,
+                command_hint,
+                details: detail_lines.join("\n"),
+            }
+        }
     }
 }
 
