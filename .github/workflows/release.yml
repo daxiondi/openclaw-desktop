@@ -47,6 +47,13 @@ jobs:
             librsvg2-dev \
             patchelf
 
+      - name: Install NSIS (Windows)
+        if: matrix.platform == 'windows'
+        shell: powershell
+        run: |
+          choco install nsis --no-progress -y
+          Add-Content $env:GITHUB_PATH "C:\Program Files (x86)\NSIS"
+
       - name: Install npm dependencies
         run: npm install
 
