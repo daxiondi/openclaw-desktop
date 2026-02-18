@@ -47,13 +47,6 @@ jobs:
             librsvg2-dev \
             patchelf
 
-      - name: Install WiX (Windows MSI toolchain)
-        if: matrix.platform == 'windows'
-        shell: powershell
-        run: |
-          choco install wixtoolset --no-progress -y
-          Add-Content $env:GITHUB_PATH "C:\Program Files (x86)\WiX Toolset v3.11\bin"
-
       - name: Install npm dependencies
         run: npm install
 
@@ -71,7 +64,7 @@ jobs:
           OPENCLAW_BUNDLE_SKIP_VERIFY: "1"
         run: |
           npm run prepare:openclaw-bundle
-          npx tauri build --bundles msi
+          npx tauri build --bundles nsis
 
       - name: Build installers (Linux)
         if: matrix.platform == 'linux'
@@ -98,8 +91,7 @@ jobs:
           name: bundle-windows
           if-no-files-found: error
           path: |
-            src-tauri/target/release/bundle/msi/*.msi
-            src-tauri/target/release/bundle/msi/*.sig
+            src-tauri/target/release/bundle/nsis/*
 
       - name: Upload Linux artifacts
         if: matrix.platform == 'linux'
