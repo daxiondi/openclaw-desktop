@@ -66,7 +66,7 @@ jobs:
           OPENCLAW_BUNDLE_SKIP_VERIFY: "1"
         run: |
           npm run prepare:openclaw-bundle
-          npx tauri build --bundles dmg
+          npx tauri build --bundles app,dmg
 
       - name: Build installers (Windows)
         if: matrix.platform == 'windows'
