@@ -99,7 +99,7 @@ jobs:
           OPENCLAW_BUNDLE_SKIP_VERIFY: "1"
         run: |
           npm run prepare:openclaw-bundle
-          npx tauri build --bundles deb,appimage
+          npx tauri build --bundles deb
 
       - name: Upload macOS artifacts
         if: matrix.platform == 'macos'
@@ -132,10 +132,6 @@ jobs:
           path: |
             src-tauri/target/release/bundle/deb/*.deb
             src-tauri/target/release/bundle/deb/*.sig
-            src-tauri/target/release/bundle/appimage/*.AppImage
-            src-tauri/target/release/bundle/appimage/*.AppImage.sig
-            src-tauri/target/release/bundle/appimage/*.AppImage.tar.gz
-            src-tauri/target/release/bundle/appimage/*.AppImage.tar.gz.sig
 
   release:
     if: startsWith(github.ref, 'refs/tags/')
