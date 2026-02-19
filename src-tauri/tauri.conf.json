@@ -31,7 +31,7 @@
   "plugins": {
     "updater": {
       "endpoints": ["https://github.com/daxiondi/openclaw-desktop/releases/latest/download/latest.json"],
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEM4RThDQzBENjkxNEY4QjUKUldTMStCUnBEY3pveVBsV1ZPdlZlN2hBSStWZUNrWTFaMTdFaWdNNWZDRWpoengxSXRsRWFkOGEK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDgzMjgzNUE0RUQ2QTk5OEYKUldTUG1XcnRwRFVvZzNZV2ZGTVNEZzdJb0puOXRndzl2dGF1NjMyRlM3dTh0dUlwNlJzaDZEM2kK",
       "windows": {
         "installMode": "passive"
       }
