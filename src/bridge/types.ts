@@ -77,6 +77,36 @@ export type BootstrapStatus = {
   error?: string;
 };
 
+export type BrowserDetectedExecutable = {
+  kind: string;
+  path: string;
+};
+
+export type BrowserModeStatus = {
+  mode: string;
+  defaultProfile: string;
+  executablePath?: string;
+  detectedBrowsers: BrowserDetectedExecutable[];
+};
+
+export type BrowserRelayStatus = {
+  installed: boolean;
+  path?: string;
+  commandHint: string;
+  message: string;
+  error?: string;
+};
+
+export type BrowserRelayDiagnostic = {
+  relayUrl: string;
+  relayReachable: boolean;
+  extensionConnected?: boolean;
+  tabsCount: number;
+  likelyCause: string;
+  detail: string;
+  commandHint: string;
+};
+
 export type OpenClawBridge = {
   listOAuthProviders: () => Promise<OAuthProvider[]>;
   detectLocalOAuthTools: () => Promise<LocalOAuthToolStatus[]>;
@@ -85,6 +115,11 @@ export type OpenClawBridge = {
   bootstrapOpenClaw: () => Promise<BootstrapStatus>;
   ensureOfficialWebReady: () => Promise<OfficialWebStatus>;
   openOfficialWebWindow: () => Promise<OpenOfficialWebResult>;
+  getBrowserModeStatus: () => Promise<BrowserModeStatus>;
+  setBrowserMode: (mode: string) => Promise<BrowserModeStatus>;
+  getBrowserRelayStatus: () => Promise<BrowserRelayStatus>;
+  prepareBrowserRelay: () => Promise<BrowserRelayStatus>;
+  diagnoseBrowserRelay: () => Promise<BrowserRelayDiagnostic>;
   saveApiKey: (providerId: string, apiKey: string) => Promise<{ ok: boolean }>;
   detectLocalCodexAuth: () => Promise<CodexAuthStatus>;
   reuseLocalCodexAuth: (setDefaultModel?: boolean) => Promise<LocalCodexReuseResult>;

@@ -7,7 +7,7 @@ use std::collections::BTreeSet;
 use std::fs;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
@@ -149,6 +149,44 @@ struct LocalCodexReuseResult {
     error: Option<String>,
 }
 
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct BrowserDetectedExecutable {
+    kind: String,
+    path: String,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct BrowserModeStatus {
+    mode: String,
+    default_profile: String,
+    executable_path: Option<String>,
+    detected_browsers: Vec<BrowserDetectedExecutable>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct BrowserRelayStatus {
+    installed: bool,
+    path: Option<String>,
+    command_hint: String,
+    message: String,
+    error: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct BrowserRelayDiagnostic {
+    relay_url: String,
+    relay_reachable: bool,
+    extension_connected: Option<bool>,
+    tabs_count: usize,
+    likely_cause: String,
+    detail: String,
+    command_hint: String,
+}
+
 #[derive(Deserialize)]
 struct LocalCodexAuthFile {
     tokens: Option<LocalCodexAuthTokens>,
@@ -232,6 +270,38 @@ fn resolve_openclaw_config_path() -> PathBuf {
         return config_path;
     }
     resolve_openclaw_state_dir().join("openclaw.json")
+}
+
+fn load_openclaw_config_value() -> serde_json::Value {
+    let config_path = resolve_openclaw_config_path();
+    if !config_path.exists() {
+        return serde_json::json!({});
+    }
+
+    let content = fs::read_to_string(&config_path).unwrap_or_default();
+    serde_json::from_str::<serde_json::Value>(&content)
+        .or_else(|_| json5::from_str::<serde_json::Value>(&content))
+        .unwrap_or_else(|_| serde_json::json!({}))
+}
+
+fn save_openclaw_config_value(value: &serde_json::Value) -> Result<(), String> {
+    let config_path = resolve_openclaw_config_path();
+    if let Some(parent) = config_path.parent() {
+        fs::create_dir_all(parent).map_err(|err| {
+            format!(
+                "Failed to create config dir {}: {}",
+                parent.to_string_lossy(),
+                err
+            )
+        })?;
+    }
+
+    fs::write(
+        &config_path,
+        serde_json::to_string_pretty(value)
+            .map_err(|err| format!("Failed to serialize OpenClaw config: {}", err))?,
+    )
+    .map_err(|err| format!("Failed to write {}: {}", config_path.to_string_lossy(), err))
 }
 
 fn resolve_openclaw_agent_dir() -> PathBuf {
@@ -622,6 +692,758 @@ fn command_exists(binary: &str, args: &[&str]) -> bool {
                 || stdout.contains("is a directory"))
         }
         Err(_) => false,
+    }
+}
+
+#[derive(Clone)]
+struct BrowserExecutableCandidate {
+    kind: &'static str,
+    path: PathBuf,
+}
+
+fn path_is_file(path: &Path) -> bool {
+    fs::metadata(path).map(|meta| meta.is_file()).unwrap_or(false)
+}
+
+fn normalize_path_key(path: &Path) -> String {
+    let text = path.to_string_lossy().to_string();
+    if cfg!(target_os = "windows") {
+        text.to_ascii_lowercase()
+    } else {
+        text
+    }
+}
+
+fn resolve_binary_in_path(binary: &str) -> Option<PathBuf> {
+    let finder = if cfg!(target_os = "windows") {
+        "where"
+    } else {
+        "which"
+    };
+    let output = Command::new(finder).arg(binary).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(PathBuf::from)
+        .find(|path| path_is_file(path))
+}
+
+fn detect_local_browser_candidates() -> Vec<BrowserExecutableCandidate> {
+    let mut found = Vec::new();
+    let mut seen = BTreeSet::new();
+
+    let mut push_candidate = |kind: &'static str, path: PathBuf| {
+        if !path_is_file(&path) {
+            return;
+        }
+        let key = normalize_path_key(&path);
+        if seen.insert(key) {
+            found.push(BrowserExecutableCandidate { kind, path });
+        }
+    };
+
+    if cfg!(target_os = "macos") {
+        let mut app_roots = vec![PathBuf::from("/Applications")];
+        if let Some(home) = resolve_user_home() {
+            app_roots.push(home.join("Applications"));
+        }
+        for root in app_roots {
+            push_candidate(
+                "chrome",
+                root.join("Google Chrome.app")
+                    .join("Contents")
+                    .join("MacOS")
+                    .join("Google Chrome"),
+            );
+            push_candidate(
+                "brave",
+                root.join("Brave Browser.app")
+                    .join("Contents")
+                    .join("MacOS")
+                    .join("Brave Browser"),
+            );
+            push_candidate(
+                "edge",
+                root.join("Microsoft Edge.app")
+                    .join("Contents")
+                    .join("MacOS")
+                    .join("Microsoft Edge"),
+            );
+            push_candidate(
+                "chromium",
+                root.join("Chromium.app")
+                    .join("Contents")
+                    .join("MacOS")
+                    .join("Chromium"),
+            );
+            push_candidate(
+                "canary",
+                root.join("Google Chrome Canary.app")
+                    .join("Contents")
+                    .join("MacOS")
+                    .join("Google Chrome Canary"),
+            );
+        }
+    } else if cfg!(target_os = "windows") {
+        let mut roots = Vec::new();
+        if let Ok(v) = std::env::var("PROGRAMFILES") {
+            roots.push(PathBuf::from(v));
+        }
+        if let Ok(v) = std::env::var("ProgramFiles") {
+            roots.push(PathBuf::from(v));
+        }
+        if let Ok(v) = std::env::var("PROGRAMFILES(X86)") {
+            roots.push(PathBuf::from(v));
+        }
+        if let Ok(v) = std::env::var("LOCALAPPDATA") {
+            roots.push(PathBuf::from(v));
+        }
+
+        for root in roots {
+            push_candidate(
+                "chrome",
+                root.join("Google")
+                    .join("Chrome")
+                    .join("Application")
+                    .join("chrome.exe"),
+            );
+            push_candidate(
+                "brave",
+                root.join("BraveSoftware")
+                    .join("Brave-Browser")
+                    .join("Application")
+                    .join("brave.exe"),
+            );
+            push_candidate(
+                "edge",
+                root.join("Microsoft")
+                    .join("Edge")
+                    .join("Application")
+                    .join("msedge.exe"),
+            );
+            push_candidate(
+                "chromium",
+                root.join("Chromium")
+                    .join("Application")
+                    .join("chrome.exe"),
+            );
+            push_candidate(
+                "canary",
+                root.join("Google")
+                    .join("Chrome SxS")
+                    .join("Application")
+                    .join("chrome.exe"),
+            );
+        }
+    } else {
+        for (kind, cmd) in [
+            ("chrome", "google-chrome"),
+            ("chrome", "google-chrome-stable"),
+            ("brave", "brave-browser"),
+            ("edge", "microsoft-edge"),
+            ("chromium", "chromium"),
+            ("chromium", "chromium-browser"),
+        ] {
+            if let Some(path) = resolve_binary_in_path(cmd) {
+                push_candidate(kind, path);
+            }
+        }
+
+        for (kind, path) in [
+            ("chrome", "/usr/bin/google-chrome"),
+            ("chrome", "/usr/bin/google-chrome-stable"),
+            ("brave", "/usr/bin/brave-browser"),
+            ("edge", "/usr/bin/microsoft-edge"),
+            ("chromium", "/usr/bin/chromium"),
+            ("chromium", "/usr/bin/chromium-browser"),
+        ] {
+            push_candidate(kind, PathBuf::from(path));
+        }
+    }
+
+    for (kind, cmd) in [
+        ("chrome", "chrome"),
+        ("chrome", "google-chrome"),
+        ("brave", "brave"),
+        ("brave", "brave-browser"),
+        ("edge", "msedge"),
+        ("edge", "microsoft-edge"),
+        ("chromium", "chromium"),
+        ("chromium", "chromium-browser"),
+    ] {
+        if let Some(path) = resolve_binary_in_path(cmd) {
+            push_candidate(kind, path);
+        }
+    }
+
+    found
+}
+
+fn ensure_browser_defaults(
+    app: &tauri::AppHandle,
+    logs: &mut Vec<String>,
+) -> Result<(), String> {
+    let config_path = resolve_openclaw_config_path();
+    if let Some(parent) = config_path.parent() {
+        fs::create_dir_all(parent).map_err(|err| {
+            format!(
+                "Failed to create config dir {}: {}",
+                parent.to_string_lossy(),
+                err
+            )
+        })?;
+    }
+
+    let mut config_value = if config_path.exists() {
+        let content = fs::read_to_string(&config_path).unwrap_or_default();
+        serde_json::from_str::<serde_json::Value>(&content)
+            .or_else(|_| json5::from_str::<serde_json::Value>(&content))
+            .unwrap_or_else(|_| serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+    if !config_value.is_object() {
+        config_value = serde_json::json!({});
+    }
+
+    let config_obj = config_value
+        .as_object_mut()
+        .ok_or_else(|| "Failed to parse OpenClaw config root object.".to_string())?;
+    let browser_entry = config_obj
+        .entry("browser".to_string())
+        .or_insert_with(|| serde_json::json!({}));
+    if !browser_entry.is_object() {
+        *browser_entry = serde_json::json!({});
+    }
+    let browser_obj = browser_entry
+        .as_object_mut()
+        .ok_or_else(|| "Failed to parse OpenClaw config browser object.".to_string())?;
+
+    let current_executable = browser_obj
+        .get("executablePath")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let current_profile = browser_obj
+        .get("defaultProfile")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+
+    let mut changed = false;
+    let candidates = detect_local_browser_candidates();
+    if candidates.is_empty() {
+        push_bootstrap_log(
+            app,
+            logs,
+            "Browser detection: no local Chromium-based browser found.",
+        );
+    } else {
+        let summary = candidates
+            .iter()
+            .take(3)
+            .map(|item| format!("{} ({})", item.kind, item.path.to_string_lossy()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        push_bootstrap_log(
+            app,
+            logs,
+            format!("Browser detection: found {}", summary),
+        );
+    }
+
+    if browser_obj
+        .get("enabled")
+        .and_then(|value| value.as_bool())
+        .is_none()
+    {
+        browser_obj.insert("enabled".to_string(), serde_json::json!(true));
+        changed = true;
+    }
+
+    if current_profile.is_none() {
+        browser_obj.insert("defaultProfile".to_string(), serde_json::json!("openclaw"));
+        push_bootstrap_log(
+            app,
+            logs,
+            "Browser config: set browser.defaultProfile=openclaw",
+        );
+        changed = true;
+    }
+
+    if current_executable.is_none() {
+        if let Some(chosen) = candidates.first() {
+            browser_obj.insert(
+                "executablePath".to_string(),
+                serde_json::json!(chosen.path.to_string_lossy().to_string()),
+            );
+            push_bootstrap_log(
+                app,
+                logs,
+                format!(
+                    "Browser config: set browser.executablePath={} ({})",
+                    chosen.path.to_string_lossy(),
+                    chosen.kind
+                ),
+            );
+            changed = true;
+        } else {
+            push_bootstrap_log(
+                app,
+                logs,
+                "Browser config: keep browser.executablePath unset (auto detection in OpenClaw runtime).",
+            );
+        }
+    } else if let Some(path) = current_executable {
+        push_bootstrap_log(
+            app,
+            logs,
+            format!("Browser config: existing browser.executablePath={}", path),
+        );
+    }
+
+    if changed {
+        fs::write(
+            &config_path,
+            serde_json::to_string_pretty(&config_value)
+                .map_err(|err| format!("Failed to serialize OpenClaw config: {}", err))?,
+        )
+        .map_err(|err| format!("Failed to write {}: {}", config_path.to_string_lossy(), err))?;
+        push_bootstrap_log(app, logs, "Browser config defaults ensured.");
+    } else {
+        push_bootstrap_log(app, logs, "Browser config already initialized; no changes.");
+    }
+
+    Ok(())
+}
+
+fn browser_mode_status_from_config(config_value: &serde_json::Value) -> BrowserModeStatus {
+    let default_profile = config_value
+        .pointer("/browser/defaultProfile")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("openclaw")
+        .to_string();
+
+    let mode = if default_profile.eq_ignore_ascii_case("chrome") {
+        "chrome".to_string()
+    } else {
+        "openclaw".to_string()
+    };
+
+    let executable_path = config_value
+        .pointer("/browser/executablePath")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+
+    let detected_browsers = detect_local_browser_candidates()
+        .into_iter()
+        .map(|candidate| BrowserDetectedExecutable {
+            kind: candidate.kind.to_string(),
+            path: candidate.path.to_string_lossy().to_string(),
+        })
+        .collect::<Vec<_>>();
+
+    BrowserModeStatus {
+        mode,
+        default_profile,
+        executable_path,
+        detected_browsers,
+    }
+}
+
+#[tauri::command]
+fn get_browser_mode_status() -> Result<BrowserModeStatus, String> {
+    let config_value = load_openclaw_config_value();
+    Ok(browser_mode_status_from_config(&config_value))
+}
+
+#[tauri::command]
+fn set_browser_mode(mode: String) -> Result<BrowserModeStatus, String> {
+    let normalized_mode = mode.trim().to_ascii_lowercase();
+    let target_profile = match normalized_mode.as_str() {
+        "openclaw" => "openclaw",
+        "chrome" => "chrome",
+        _ => return Err("Unsupported browser mode. Use 'openclaw' or 'chrome'.".to_string()),
+    };
+
+    let mut config_value = load_openclaw_config_value();
+    if !config_value.is_object() {
+        config_value = serde_json::json!({});
+    }
+
+    let config_obj = config_value
+        .as_object_mut()
+        .ok_or_else(|| "Failed to parse OpenClaw config root object.".to_string())?;
+    let browser_entry = config_obj
+        .entry("browser".to_string())
+        .or_insert_with(|| serde_json::json!({}));
+    if !browser_entry.is_object() {
+        *browser_entry = serde_json::json!({});
+    }
+
+    let browser_obj = browser_entry
+        .as_object_mut()
+        .ok_or_else(|| "Failed to parse OpenClaw config browser object.".to_string())?;
+    browser_obj.insert(
+        "defaultProfile".to_string(),
+        serde_json::json!(target_profile),
+    );
+    if browser_obj
+        .get("enabled")
+        .and_then(|value| value.as_bool())
+        .is_none()
+    {
+        browser_obj.insert("enabled".to_string(), serde_json::json!(true));
+    }
+
+    save_openclaw_config_value(&config_value)?;
+    Ok(browser_mode_status_from_config(&config_value))
+}
+
+fn extract_browser_relay_path(output: &str) -> Option<String> {
+    output.lines().map(str::trim).find_map(|line| {
+        if line.is_empty() {
+            return None;
+        }
+        if line.starts_with("Docs:") || line.starts_with("Next:") || line.starts_with("- ") {
+            return None;
+        }
+        if line.eq_ignore_ascii_case("Copied to clipboard.") {
+            return None;
+        }
+
+        let lower = line.to_ascii_lowercase();
+        if lower.contains("chrome extension is not installed") {
+            return None;
+        }
+        Some(line.to_string())
+    })
+}
+
+fn browser_relay_status_with_binary(binary: &str) -> BrowserRelayStatus {
+    let command_hint = "openclaw browser extension install".to_string();
+    match run_command(binary, &["browser", "extension", "path"]) {
+        Ok((true, output)) => {
+            let path = extract_browser_relay_path(&output);
+            if path.is_some() {
+                BrowserRelayStatus {
+                    installed: true,
+                    path,
+                    command_hint,
+                    message: "Browser relay extension is ready.".to_string(),
+                    error: None,
+                }
+            } else {
+                BrowserRelayStatus {
+                    installed: false,
+                    path: None,
+                    command_hint,
+                    message: "Relay path is unavailable.".to_string(),
+                    error: if output.trim().is_empty() {
+                        None
+                    } else {
+                        Some(output)
+                    },
+                }
+            }
+        }
+        Ok((false, output)) => BrowserRelayStatus {
+            installed: false,
+            path: None,
+            command_hint,
+            message: "Browser relay extension is not installed.".to_string(),
+            error: if output.trim().is_empty() {
+                None
+            } else {
+                Some(output)
+            },
+        },
+        Err(error) => BrowserRelayStatus {
+            installed: false,
+            path: None,
+            command_hint,
+            message: "Failed to check browser relay extension.".to_string(),
+            error: Some(error),
+        },
+    }
+}
+
+fn ensure_browser_relay_installed(app: &tauri::AppHandle, binary: &str, logs: &mut Vec<String>) {
+    push_bootstrap_log(
+        app,
+        logs,
+        "Ensuring browser relay extension assets are prepared...",
+    );
+
+    match run_command(binary, &["browser", "extension", "install"]) {
+        Ok((true, output)) => {
+            let path = extract_browser_relay_path(&output)
+                .or_else(|| browser_relay_status_with_binary(binary).path);
+            if let Some(path) = path {
+                push_bootstrap_log(
+                    app,
+                    logs,
+                    format!("Browser relay extension ready at {}", path),
+                );
+            } else {
+                push_bootstrap_log(
+                    app,
+                    logs,
+                    "Browser relay extension install command completed.",
+                );
+            }
+        }
+        Ok((false, output)) => {
+            let detail = if output.trim().is_empty() {
+                "no output".to_string()
+            } else {
+                output
+            };
+            push_bootstrap_log(
+                app,
+                logs,
+                format!("WARN: failed to prepare browser relay extension: {}", detail),
+            );
+        }
+        Err(error) => {
+            push_bootstrap_log(
+                app,
+                logs,
+                format!(
+                    "WARN: failed to run browser relay extension install command: {}",
+                    error
+                ),
+            );
+        }
+    }
+}
+
+#[tauri::command]
+fn get_browser_relay_status() -> BrowserRelayStatus {
+    let command_hint = "openclaw browser extension install".to_string();
+    let Some(binary) = resolve_openclaw_binary() else {
+        return BrowserRelayStatus {
+            installed: false,
+            path: None,
+            command_hint,
+            message: "openclaw binary not found.".to_string(),
+            error: Some("Install OpenClaw first, then retry.".to_string()),
+        };
+    };
+    browser_relay_status_with_binary(&binary)
+}
+
+#[tauri::command]
+fn prepare_browser_relay() -> BrowserRelayStatus {
+    let command_hint = "openclaw browser extension install".to_string();
+    let Some(binary) = resolve_openclaw_binary() else {
+        return BrowserRelayStatus {
+            installed: false,
+            path: None,
+            command_hint,
+            message: "openclaw binary not found.".to_string(),
+            error: Some("Install OpenClaw first, then retry.".to_string()),
+        };
+    };
+
+    match run_command(&binary, &["browser", "extension", "install"]) {
+        Ok((true, output)) => {
+            let mut status = browser_relay_status_with_binary(&binary);
+            if status.installed {
+                status.message = "Browser relay extension prepared.".to_string();
+            } else {
+                status.message =
+                    "Install command finished, but relay extension path is still unavailable."
+                        .to_string();
+                if status.error.is_none() && !output.trim().is_empty() {
+                    status.error = Some(output);
+                }
+            }
+            status
+        }
+        Ok((false, output)) => BrowserRelayStatus {
+            installed: false,
+            path: None,
+            command_hint,
+            message: "Failed to prepare browser relay extension.".to_string(),
+            error: if output.trim().is_empty() {
+                Some("openclaw browser extension install failed".to_string())
+            } else {
+                Some(output)
+            },
+        },
+        Err(error) => BrowserRelayStatus {
+            installed: false,
+            path: None,
+            command_hint,
+            message: "Failed to prepare browser relay extension.".to_string(),
+            error: Some(error),
+        },
+    }
+}
+
+#[derive(Deserialize)]
+struct BrowserExtensionStatusResponse {
+    connected: bool,
+}
+
+fn resolve_browser_relay_url_from_config(config_value: &serde_json::Value) -> String {
+    let from_profile = config_value
+        .pointer("/browser/profiles/chrome/cdpUrl")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+
+    let from_port = config_value
+        .pointer("/browser/profiles/chrome/cdpPort")
+        .and_then(|value| value.as_i64())
+        .filter(|port| *port > 0 && *port <= 65535)
+        .map(|port| format!("http://127.0.0.1:{}", port));
+
+    from_profile
+        .or(from_port)
+        .unwrap_or_else(|| "http://127.0.0.1:18792".to_string())
+        .trim_end_matches('/')
+        .to_string()
+}
+
+fn parse_browser_tabs_count(output: &str) -> Option<usize> {
+    let parsed = serde_json::from_str::<serde_json::Value>(output).ok()?;
+    let tabs = parsed.get("tabs")?.as_array()?;
+    Some(tabs.len())
+}
+
+#[tauri::command]
+async fn diagnose_browser_relay() -> BrowserRelayDiagnostic {
+    let command_hint = "openclaw browser --browser-profile chrome tabs --json".to_string();
+    let config_value = load_openclaw_config_value();
+    let relay_url = resolve_browser_relay_url_from_config(&config_value);
+    let Some(binary) = resolve_openclaw_binary() else {
+        return BrowserRelayDiagnostic {
+            relay_url,
+            relay_reachable: false,
+            extension_connected: None,
+            tabs_count: 0,
+            likely_cause: "openclaw CLI 未安装".to_string(),
+            detail: "未检测到 openclaw 可执行文件，无法诊断浏览器中继。".to_string(),
+            command_hint,
+        };
+    };
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_millis(1500))
+        .build();
+    let mut relay_reachable = false;
+    let mut extension_connected: Option<bool> = None;
+    let mut detail_parts: Vec<String> = Vec::new();
+
+    match client {
+        Ok(http) => {
+            let probe = http
+                .head(format!("{}/", relay_url))
+                .send()
+                .await
+                .map(|response| response.status().is_success())
+                .unwrap_or(false);
+            relay_reachable = probe;
+
+            if relay_reachable {
+                match http
+                    .get(format!("{}/extension/status", relay_url))
+                    .send()
+                    .await
+                {
+                    Ok(response) => {
+                        if response.status().is_success() {
+                            match response.json::<BrowserExtensionStatusResponse>().await {
+                                Ok(parsed) => {
+                                    extension_connected = Some(parsed.connected);
+                                }
+                                Err(error) => {
+                                    detail_parts.push(format!(
+                                        "无法解析 extension/status 响应: {}",
+                                        error
+                                    ));
+                                }
+                            }
+                        } else {
+                            detail_parts.push(format!(
+                                "extension/status 响应异常: HTTP {}",
+                                response.status().as_u16()
+                            ));
+                        }
+                    }
+                    Err(error) => {
+                        detail_parts.push(format!("请求 extension/status 失败: {}", error));
+                    }
+                }
+            } else {
+                detail_parts.push(format!("中继地址不可达: {}/", relay_url));
+            }
+        }
+        Err(error) => {
+            detail_parts.push(format!("创建诊断 HTTP 客户端失败: {}", error));
+        }
+    }
+
+    let mut tabs_count = 0usize;
+    match run_command(&binary, &["browser", "--browser-profile", "chrome", "tabs", "--json"]) {
+        Ok((true, output)) => {
+            tabs_count = parse_browser_tabs_count(&output).unwrap_or(0);
+            if tabs_count == 0 {
+                detail_parts.push("当前没有已附加的 Chrome 标签页。".to_string());
+            }
+        }
+        Ok((false, output)) => {
+            if output.trim().is_empty() {
+                detail_parts.push("获取 chrome profile 标签页失败。".to_string());
+            } else {
+                detail_parts.push(output);
+            }
+        }
+        Err(error) => {
+            detail_parts.push(format!("执行 tabs 检查失败: {}", error));
+        }
+    }
+
+    let likely_cause = if !relay_reachable {
+        "本地中继服务不可达".to_string()
+    } else if extension_connected == Some(false) {
+        "扩展未连接到本地中继".to_string()
+    } else if extension_connected == Some(true) && tabs_count == 0 {
+        "扩展已连上中继，但标签页附加失败".to_string()
+    } else if tabs_count > 0 {
+        "中继工作正常".to_string()
+    } else {
+        "状态不完整，请重试诊断".to_string()
+    };
+
+    if extension_connected == Some(true) && tabs_count == 0 {
+        detail_parts.push(
+            "常见原因：标签页打开了 DevTools、被其他自动化工具占用，或加载了多个 OpenClaw Browser Relay 扩展实例。"
+                .to_string(),
+        );
+    }
+
+    BrowserRelayDiagnostic {
+        relay_url,
+        relay_reachable,
+        extension_connected,
+        tabs_count,
+        likely_cause,
+        detail: detail_parts.join(" | "),
+        command_hint,
     }
 }
 
@@ -1858,6 +2680,14 @@ async fn bootstrap_openclaw(app: tauri::AppHandle) -> BootstrapStatus {
     };
 
     push_bootstrap_log(&app, &mut logs, format!("Using CLI binary: {}", binary));
+    if let Err(error) = ensure_browser_defaults(&app, &mut logs) {
+        push_bootstrap_log(
+            &app,
+            &mut logs,
+            format!("WARN: failed to ensure browser defaults: {}", error),
+        );
+    }
+    ensure_browser_relay_installed(&app, &binary, &mut logs);
 
     if installed_before && !install_performed {
         push_bootstrap_log(&app, &mut logs, "Checking existing gateway status...");
@@ -2267,6 +3097,8 @@ fn validate_local_codex_connectivity() -> CodexConnectivityStatus {
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             list_oauth_providers,
             start_oauth_login,
@@ -2274,6 +3106,11 @@ fn main() {
             bootstrap_openclaw,
             ensure_official_web_ready,
             open_official_web_window,
+            get_browser_mode_status,
+            set_browser_mode,
+            get_browser_relay_status,
+            prepare_browser_relay,
+            diagnose_browser_relay,
             save_api_key,
             detect_local_codex_auth,
             reuse_local_codex_auth,

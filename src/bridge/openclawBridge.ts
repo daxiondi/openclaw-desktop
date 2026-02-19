@@ -1,5 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  BrowserRelayDiagnostic,
+  BrowserRelayStatus,
+  BrowserModeStatus,
   BootstrapStatus,
   CodexConnectivityStatus,
   CodexAuthStatus,
@@ -230,6 +233,69 @@ export const openclawBridge: OpenClawBridge = {
     }
 
     return invoke<OpenOfficialWebResult>("open_official_web_window");
+  },
+
+  async getBrowserModeStatus() {
+    if (!isTauriRuntime()) {
+      return {
+        mode: "openclaw",
+        defaultProfile: "openclaw",
+        detectedBrowsers: []
+      } satisfies BrowserModeStatus;
+    }
+
+    return invoke<BrowserModeStatus>("get_browser_mode_status");
+  },
+
+  async setBrowserMode(mode: string) {
+    if (!isTauriRuntime()) {
+      return {
+        mode: mode.trim().toLowerCase() === "chrome" ? "chrome" : "openclaw",
+        defaultProfile: mode.trim().toLowerCase() === "chrome" ? "chrome" : "openclaw",
+        detectedBrowsers: []
+      } satisfies BrowserModeStatus;
+    }
+
+    return invoke<BrowserModeStatus>("set_browser_mode", { mode });
+  },
+
+  async getBrowserRelayStatus() {
+    if (!isTauriRuntime()) {
+      return {
+        installed: false,
+        commandHint: "openclaw browser extension install",
+        message: "Native runtime required"
+      } satisfies BrowserRelayStatus;
+    }
+
+    return invoke<BrowserRelayStatus>("get_browser_relay_status");
+  },
+
+  async prepareBrowserRelay() {
+    if (!isTauriRuntime()) {
+      return {
+        installed: false,
+        commandHint: "openclaw browser extension install",
+        message: "Native runtime required"
+      } satisfies BrowserRelayStatus;
+    }
+
+    return invoke<BrowserRelayStatus>("prepare_browser_relay");
+  },
+
+  async diagnoseBrowserRelay() {
+    if (!isTauriRuntime()) {
+      return {
+        relayUrl: "http://127.0.0.1:18792",
+        relayReachable: false,
+        tabsCount: 0,
+        likelyCause: "Native runtime required",
+        detail: "Native runtime required",
+        commandHint: "openclaw browser --browser-profile chrome tabs --json"
+      } satisfies BrowserRelayDiagnostic;
+    }
+
+    return invoke<BrowserRelayDiagnostic>("diagnose_browser_relay");
   },
 
   async saveApiKey(providerId: string, apiKey: string) {

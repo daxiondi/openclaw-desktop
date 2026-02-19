@@ -13,6 +13,9 @@ jobs:
   build:
     name: build-${{ matrix.platform }}
     runs-on: ${{ matrix.os }}
+    env:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
     strategy:
       fail-fast: false
       matrix:
@@ -96,7 +99,7 @@ jobs:
           OPENCLAW_BUNDLE_SKIP_VERIFY: "1"
         run: |
           npm run prepare:openclaw-bundle
-          npx tauri build --bundles deb
+          npx tauri build --bundles deb,appimage
 
       - name: Upload macOS artifacts
         if: matrix.platform == 'macos'
@@ -107,6 +110,8 @@ jobs:
           path: |
             src-tauri/target/release/bundle/dmg/*.dmg
             src-tauri/target/release/bundle/dmg/*.sig
+            src-tauri/target/release/bundle/macos/*.app.tar.gz
+            src-tauri/target/release/bundle/macos/*.app.tar.gz.sig
 
       - name: Upload Windows artifacts
         if: matrix.platform == 'windows'
@@ -127,12 +132,24 @@ jobs:
           path: |
             src-tauri/target/release/bundle/deb/*.deb
             src-tauri/target/release/bundle/deb/*.sig
+            src-tauri/target/release/bundle/appimage/*.AppImage
+            src-tauri/target/release/bundle/appimage/*.AppImage.sig
+            src-tauri/target/release/bundle/appimage/*.AppImage.tar.gz
+            src-tauri/target/release/bundle/appimage/*.AppImage.tar.gz.sig
 
   release:
     if: startsWith(github.ref, 'refs/tags/')
     needs: build
     runs-on: ubuntu-22.04
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
       - name: Download all build artifacts
         uses: actions/download-artifact@v4
         with:
@@ -141,6 +158,11 @@ jobs:
 
       - name: Verify assets
         run: ls -R release-assets
+
+      - name: Generate updater manifest
+        run: |
+          node scripts/generate-updater-manifest.mjs release-assets "${{ github.ref_name }}" "${{ github.repository }}"
+          cat release-assets/latest.json
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2

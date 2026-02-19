@@ -24,6 +24,31 @@ The goal is simple: install once, use immediately.
    - Local Ollama
 4. Start chatting and configuring models.
 
+## In-App Updates (auto-detect + one click)
+
+The app now includes a built-in updater control in the header:
+
+- It silently checks for updates after startup.
+- When a newer version is found, users get an `Update & Relaunch` button.
+- Clicking it downloads, installs, and relaunches the app without reinstalling a new package manually.
+
+### One-time setup
+
+1. Generate updater signing keys:
+
+```bash
+npx tauri signer generate -w .tmp/updater/tauri-updater.key
+```
+
+2. Put the generated public key into `src-tauri/tauri.conf.json` at `plugins.updater.pubkey`.
+3. Configure GitHub repository secrets:
+   - `TAURI_SIGNING_PRIVATE_KEY`: private key content
+   - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`: private key password (if set)
+4. Publish a tag (for example `v0.2.0`). CI will automatically:
+   - build installers
+   - generate `latest.json`
+   - upload all assets to GitHub Release (used by in-app update checks)
+
 ## Development
 
 ### Run frontend

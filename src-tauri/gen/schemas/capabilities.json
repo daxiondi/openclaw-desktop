@@ -1,1 +1,1 @@
-{"default":{"identifier":"default","description":"Default capability set for openclaw-desktop","local":true,"windows":["main"],"permissions":["core:default"]}}
+{"default":{"identifier":"default","description":"Default capability set for openclaw-desktop","local":true,"windows":["main"],"permissions":["core:default"]},"desktop-capability":{"identifier":"desktop-capability","description":"","local":true,"windows":["main"],"permissions":["core:default","updater:default","process:default"],"platforms":["macOS","windows","linux"]}}

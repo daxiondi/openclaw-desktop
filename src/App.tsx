@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import Bootstrap from "./features/bootstrap/Bootstrap";
 import Onboarding from "./features/onboarding/Onboarding";
 import Shell from "./features/shell/Shell";
+import UpdaterWidget from "./features/updater/UpdaterWidget";
 
 export default function App() {
   const { t, i18n } = useTranslation();
@@ -27,13 +28,16 @@ export default function App() {
           <h1>{t("app.title")}</h1>
           <p>{t("app.subtitle")}</p>
         </div>
-        <label className="lang-switch">
-          <span>{t("lang.label")}</span>
-          <select value={i18n.language} onChange={(event) => void i18n.changeLanguage(event.target.value)}>
-            <option value="zh-CN">中文</option>
-            <option value="en-US">English</option>
-          </select>
-        </label>
+        <div className="hero-tools">
+          <label className="lang-switch">
+            <span>{t("lang.label")}</span>
+            <select value={i18n.language} onChange={(event) => void i18n.changeLanguage(event.target.value)}>
+              <option value="zh-CN">中文</option>
+              <option value="en-US">English</option>
+            </select>
+          </label>
+          <UpdaterWidget onStatus={setStatus} />
+        </div>
       </header>
 
       {!bootstrapped ? (

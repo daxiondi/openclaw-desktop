@@ -23,6 +23,31 @@
    - 本地 Ollama
 4. 登录完成后即可进入聊天和模型配置。
 
+## 在线更新（自动检测 + 一键更新）
+
+应用顶部已内置在线更新入口：
+
+- 启动后自动静默检测新版本。
+- 检测到新版本时，出现“更新并重启”按钮。
+- 用户点击后自动下载、安装并重启应用，无需重新下载安装包。
+
+### 首次配置（只做一次）
+
+1. 生成 updater 签名密钥（私钥只保存在你手里）：
+
+```bash
+npx tauri signer generate -w .tmp/updater/tauri-updater.key
+```
+
+2. 把公钥内容填到 `src-tauri/tauri.conf.json` 的 `plugins.updater.pubkey`。
+3. 在 GitHub 仓库 Secrets 配置：
+   - `TAURI_SIGNING_PRIVATE_KEY`：私钥文件内容
+   - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`：私钥密码（如果你生成时设置了密码）
+4. 打 tag 发布（例如 `v0.2.0`），CI 会自动：
+   - 构建安装包
+   - 生成 `latest.json`
+   - 上传到 Release 资产（客户端据此检测更新）
+
 ## 开发环境
 
 ### 运行前端

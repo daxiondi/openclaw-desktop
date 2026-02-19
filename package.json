@@ -1,6 +1,6 @@
 {
   "name": "openclaw-desktop",
-  "version": "0.1.0",
+  "version": "0.1.6",
   "private": true,
   "type": "module",
   "scripts": {
@@ -8,6 +8,7 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "prepare:openclaw-bundle": "node scripts/prepare-openclaw-bundle.mjs",
+    "generate:updater-manifest": "node scripts/generate-updater-manifest.mjs",
     "test:offline-local-codex-ui": "node scripts/test-offline-local-codex-ui.mjs",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
@@ -15,6 +16,8 @@
   },
   "dependencies": {
     "@tauri-apps/api": "^2.3.0",
+    "@tauri-apps/plugin-process": "^2.3.1",
+    "@tauri-apps/plugin-updater": "^2.10.0",
     "i18next": "^24.2.2",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
