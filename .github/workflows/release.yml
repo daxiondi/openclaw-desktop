@@ -64,9 +64,35 @@ jobs:
         if: matrix.platform == 'macos'
         env:
           OPENCLAW_BUNDLE_SKIP_VERIFY: "1"
+          APPLE_SIGNING_IDENTITY: "-"
         run: |
           npm run prepare:openclaw-bundle
           npx tauri build --bundles app,dmg
+
+          APP_PATH="$(find src-tauri/target/release/bundle/macos -maxdepth 1 -name '*.app' | head -n 1)"
+          if [ -z "$APP_PATH" ]; then
+            echo "No macOS app bundle generated."
+            exit 1
+          fi
+          echo "Verifying app signature: $APP_PATH"
+          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+
+          DMG_PATH="$(find src-tauri/target/release/bundle/dmg -maxdepth 1 -name '*.dmg' | head -n 1)"
+          if [ -z "$DMG_PATH" ]; then
+            echo "No DMG generated."
+            exit 1
+          fi
+          MOUNT_DIR="$(mktemp -d)"
+          hdiutil attach -nobrowse -mountpoint "$MOUNT_DIR" "$DMG_PATH"
+          APP_IN_DMG="$(find "$MOUNT_DIR" -maxdepth 1 -name '*.app' | head -n 1)"
+          if [ -z "$APP_IN_DMG" ]; then
+            hdiutil detach "$MOUNT_DIR" || true
+            echo "No app bundle found inside DMG."
+            exit 1
+          fi
+          echo "Verifying app signature inside DMG: $APP_IN_DMG"
+          codesign --verify --deep --strict --verbose=2 "$APP_IN_DMG"
+          hdiutil detach "$MOUNT_DIR"
 
       - name: Build installers (Windows)
         if: matrix.platform == 'windows'

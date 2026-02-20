@@ -1,6 +1,6 @@
 [package]
 name = "openclaw-desktop"
-version = "0.1.7"
+version = "0.1.8"
 description = "openclaw-desktop native shell"
 authors = ["openclaw-desktop Team"]
 edition = "2021"
