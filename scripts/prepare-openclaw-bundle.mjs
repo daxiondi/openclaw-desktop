@@ -14,14 +14,20 @@ const openclawRoot = path.resolve(workspaceRoot, "openclaw");
 const bundleDir = path.resolve(desktopRoot, "src-tauri", "bundle", "resources", "openclaw-bundle");
 const tempDir = path.resolve(desktopRoot, ".tmp", "openclaw-bundle");
 const OPENCLAW_MIN_NODE = "22.12.0";
+const RUN_MAX_BUFFER = Number(process.env.OPENCLAW_BUNDLE_RUN_MAX_BUFFER || 128 * 1024 * 1024);
 
 function run(cmd, args, opts = {}) {
   const result = spawnSync(cmd, args, {
     cwd: opts.cwd,
     env: opts.env ?? process.env,
     encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"]
+    stdio: ["ignore", "pipe", "pipe"],
+    maxBuffer: RUN_MAX_BUFFER
   });
+
+  if (result.error) {
+    throw new Error(`${cmd} ${args.join(" ")} failed\n${String(result.error)}`);
+  }
 
   if (result.status !== 0) {
     const out = (result.stdout ?? "").trim();
