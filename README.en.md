@@ -24,6 +24,26 @@ The goal is simple: install once, use immediately.
    - Local Ollama
 4. Start chatting and configuring models.
 
+## Windows Offline Installation
+
+Goal: keep first-run as close to one-click as possible for weak-network/offline users.
+
+Two paths are now available on Windows:
+
+1. Automatic path (recommended)
+   - Install and launch `openclaw-desktop`.
+   - On first bootstrap, the app tries bundled offline payload first.
+   - If bundled payload is missing/incomplete, it auto-downloads and extracts `openclaw-desktop-windows-portable.zip`, then continues install.
+2. Manual path (fallback)
+   - Click `Install from Portable Zip` on the bootstrap page.
+   - Pick your downloaded `openclaw-desktop-windows-portable.zip`.
+   - The app extracts/installs the offline payload and continues bootstrap.
+
+Why Windows can still fail to include payload inside setup:
+
+- In the Windows packaging pipeline, resource embedding can be unstable (symptom: `openclaw-bundle` missing in installer output).
+- To keep users unblocked, runtime auto-download fallback and manual portable selection are both supported, with no extra CLI setup required.
+
 ## Community Group
 
 Scan the QR code to join the `openclaw` community chat group:

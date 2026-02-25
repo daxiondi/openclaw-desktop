@@ -188,6 +188,40 @@ export const openclawBridge: OpenClawBridge = {
     return invoke<BootstrapStatus>("bootstrap_openclaw");
   },
 
+  async selectWindowsPortableBundleFile() {
+    if (!isTauriRuntime()) {
+      return null;
+    }
+    return invoke<string | null>("select_windows_portable_bundle_file");
+  },
+
+  async bootstrapOpenClawWithSelectedBundle(bundleZipPath: string) {
+    if (!isTauriRuntime()) {
+      return {
+        ready: false,
+        installed: false,
+        initialized: false,
+        web: {
+          ready: false,
+          installed: false,
+          running: false,
+          started: false,
+          url: "http://127.0.0.1:18789/",
+          commandHint: "openclaw gateway",
+          message: "Native runtime required",
+          error: "Native runtime required"
+        },
+        message: "Native runtime required",
+        logs: ["Manual bundle install is only supported in Tauri runtime."],
+        error: "Native runtime required"
+      } satisfies BootstrapStatus;
+    }
+
+    return invoke<BootstrapStatus>("bootstrap_openclaw_with_selected_bundle", {
+      bundleZipPath
+    });
+  },
+
   async ensureOfficialWebReady() {
     const url = "http://127.0.0.1:18789/";
 

@@ -2215,32 +2215,93 @@ fn try_prepare_windows_downloaded_bundle(
     Ok(Some(canonical))
 }
 
-fn install_openclaw_from_bundle(
+fn try_prepare_windows_bundle_from_selected_zip(
     app: &tauri::AppHandle,
     logs: &mut Vec<String>,
-) -> Result<bool, String> {
-    let mut bundle_dir = if let Some(found) = resolve_bundled_openclaw_dir(app) {
-        found
-    } else if let Some(downloaded) = try_prepare_windows_downloaded_bundle(app, logs)? {
-        downloaded
-    } else {
+    selected_zip: &PathBuf,
+) -> Result<Option<PathBuf>, String> {
+    if !cfg!(target_os = "windows") {
+        return Ok(None);
+    }
+
+    if !selected_zip.exists() {
+        return Err(format!(
+            "Selected bundle file does not exist: {}",
+            selected_zip.to_string_lossy()
+        ));
+    }
+
+    let cache_root = resolve_openclaw_agent_dir().join("offline-bundle-cache");
+    fs::create_dir_all(&cache_root).map_err(|err| err.to_string())?;
+
+    let extract_root = cache_root.join("portable-extract-manual");
+    let target_bundle = cache_root.join("openclaw-bundle");
+    let zip_escaped = selected_zip.to_string_lossy().replace('\'', "''");
+    let extract_escaped = extract_root.to_string_lossy().replace('\'', "''");
+
+    push_bootstrap_log(
+        app,
+        logs,
+        format!(
+            "Using selected portable bundle file: {}",
+            selected_zip.to_string_lossy()
+        ),
+    );
+
+    let extract_script = format!(
+        "$ErrorActionPreference='Stop'; \
+         if (Test-Path '{extract}') {{ Remove-Item -LiteralPath '{extract}' -Recurse -Force; }}; \
+         New-Item -ItemType Directory -Path '{extract}' -Force | Out-Null; \
+         Expand-Archive -LiteralPath '{zip}' -DestinationPath '{extract}' -Force;",
+        extract = extract_escaped,
+        zip = zip_escaped,
+    );
+
+    let output = Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            &extract_script,
+        ])
+        .output()
+        .map_err(|err| format!("Failed to extract selected portable bundle: {}", err))?;
+    if !output.status.success() {
+        let detail = summarize_output(&output.stdout, &output.stderr);
+        if detail.is_empty() {
+            return Err("Selected portable bundle extraction failed.".to_string());
+        }
+        return Err(format!("Selected portable bundle extraction failed: {}", detail));
+    }
+
+    let Some(found_bundle) = find_openclaw_bundle_dir(&extract_root) else {
         push_bootstrap_log(
             app,
             logs,
-            "No bundled OpenClaw payload found in installer resources.",
+            "Selected portable package does not contain openclaw-bundle directory.",
         );
-        return Ok(false);
+        return Ok(None);
     };
 
-    if !bundle_payload_usable(&bundle_dir) {
-        push_bootstrap_log(
-            app,
-            logs,
-            "Bundled payload is incomplete; trying downloadable offline payload.",
-        );
-        if let Some(downloaded) = try_prepare_windows_downloaded_bundle(app, logs)? {
-            bundle_dir = downloaded;
-        }
+    copy_dir_with_native_tool(&found_bundle, &target_bundle)?;
+    let canonical = target_bundle.canonicalize().unwrap_or(target_bundle);
+    push_bootstrap_log(
+        app,
+        logs,
+        format!("Selected offline payload extracted to {}", canonical.to_string_lossy()),
+    );
+    Ok(Some(canonical))
+}
+
+fn install_openclaw_from_bundle_dir(
+    app: &tauri::AppHandle,
+    logs: &mut Vec<String>,
+    bundle_dir: &PathBuf,
+) -> Result<bool, String> {
+    if !bundle_payload_usable(bundle_dir) {
+        push_bootstrap_log(app, logs, "Bundled payload is incomplete; skip offline install.");
+        return Ok(false);
     }
 
     let home = std::env::var("HOME")
@@ -2253,7 +2314,7 @@ fn install_openclaw_from_bundle(
     if prepared_prefix.exists() {
         push_bootstrap_log(app, logs, "Installing OpenClaw from bundled prefix snapshot...");
         copy_dir_with_native_tool(&prepared_prefix, &prefix)?;
-        if let Err(error) = ensure_prefix_openclaw_launcher(&prefix, &bundle_dir, logs) {
+        if let Err(error) = ensure_prefix_openclaw_launcher(&prefix, bundle_dir, logs) {
             push_bootstrap_log(app, logs, format!("WARN: {}", error));
         }
         if prefix_has_openclaw_binary(&prefix) {
@@ -2267,7 +2328,7 @@ fn install_openclaw_from_bundle(
         );
     }
 
-    let Some(node_bin) = resolve_bundled_node_binary(&bundle_dir) else {
+    let Some(node_bin) = resolve_bundled_node_binary(bundle_dir) else {
         push_bootstrap_log(app, logs, "Bundled payload is incomplete; skip offline install.");
         return Ok(false);
     };
@@ -2298,7 +2359,7 @@ fn install_openclaw_from_bundle(
 
     let detail = summarize_output(&output.stdout, &output.stderr);
     if output.status.success() {
-        if let Err(error) = ensure_prefix_openclaw_launcher(&prefix, &bundle_dir, logs) {
+        if let Err(error) = ensure_prefix_openclaw_launcher(&prefix, bundle_dir, logs) {
             push_bootstrap_log(app, logs, format!("WARN: {}", error));
         }
         if prefix_has_openclaw_binary(&prefix) {
@@ -2313,6 +2374,36 @@ fn install_openclaw_from_bundle(
     } else {
         Err(format!("Bundled offline install failed: {}", detail))
     }
+}
+
+fn install_openclaw_from_bundle(
+    app: &tauri::AppHandle,
+    logs: &mut Vec<String>,
+) -> Result<bool, String> {
+    let mut bundle_dir = if let Some(found) = resolve_bundled_openclaw_dir(app) {
+        found
+    } else if let Some(downloaded) = try_prepare_windows_downloaded_bundle(app, logs)? {
+        downloaded
+    } else {
+        push_bootstrap_log(
+            app,
+            logs,
+            "No bundled OpenClaw payload found in installer resources.",
+        );
+        return Ok(false);
+    };
+
+    if !bundle_payload_usable(&bundle_dir) {
+        push_bootstrap_log(
+            app,
+            logs,
+            "Bundled payload is incomplete; trying downloadable offline payload.",
+        );
+        if let Some(downloaded) = try_prepare_windows_downloaded_bundle(app, logs)? {
+            bundle_dir = downloaded;
+        }
+    }
+    install_openclaw_from_bundle_dir(app, logs, &bundle_dir)
 }
 
 fn gateway_child_slot() -> &'static Mutex<Option<Child>> {
@@ -3006,6 +3097,207 @@ async fn bootstrap_openclaw(app: tauri::AppHandle) -> BootstrapStatus {
 }
 
 #[tauri::command]
+fn select_windows_portable_bundle_file() -> Result<Option<String>, String> {
+    if !cfg!(target_os = "windows") {
+        return Ok(None);
+    }
+
+    let script = r#"
+Add-Type -AssemblyName System.Windows.Forms
+$dialog = New-Object System.Windows.Forms.OpenFileDialog
+$dialog.Title = 'Select openclaw-desktop portable zip'
+$dialog.Filter = 'Portable Zip (*.zip)|*.zip|All Files (*.*)|*.*'
+$dialog.Multiselect = $false
+$dialog.CheckFileExists = $true
+if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+  [Console]::Out.Write($dialog.FileName)
+}
+"#;
+
+    let output = Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-STA",
+            "-Command",
+            script,
+        ])
+        .output()
+        .map_err(|err| format!("Failed to open bundle selector dialog: {}", err))?;
+    if !output.status.success() {
+        let detail = summarize_output(&output.stdout, &output.stderr);
+        return Err(if detail.is_empty() {
+            "Bundle selector dialog failed.".to_string()
+        } else {
+            format!("Bundle selector dialog failed: {}", detail)
+        });
+    }
+
+    let selected = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if selected.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(selected))
+    }
+}
+
+#[tauri::command]
+async fn bootstrap_openclaw_with_selected_bundle(
+    app: tauri::AppHandle,
+    bundle_zip_path: String,
+) -> BootstrapStatus {
+    let mut pre_logs: Vec<String> = Vec::new();
+    push_bootstrap_log(&app, &mut pre_logs, "Manual portable install started.");
+
+    if !cfg!(target_os = "windows") {
+        return BootstrapStatus {
+            ready: false,
+            installed: false,
+            initialized: false,
+            web: OfficialWebStatus {
+                ready: false,
+                installed: false,
+                running: false,
+                started: false,
+                url: OFFICIAL_WEB_URL.to_string(),
+                command_hint: "openclaw gateway".to_string(),
+                message: "Manual portable install is only supported on Windows.".to_string(),
+                error: Some("unsupported platform".to_string()),
+            },
+            message: "Manual portable install is only supported on Windows.".to_string(),
+            logs: pre_logs,
+            error: Some("unsupported platform".to_string()),
+        };
+    }
+
+    let selected = bundle_zip_path.trim();
+    if selected.is_empty() {
+        return BootstrapStatus {
+            ready: false,
+            installed: false,
+            initialized: false,
+            web: OfficialWebStatus {
+                ready: false,
+                installed: false,
+                running: false,
+                started: false,
+                url: OFFICIAL_WEB_URL.to_string(),
+                command_hint: "openclaw gateway".to_string(),
+                message: "No portable bundle file selected.".to_string(),
+                error: Some("empty bundle path".to_string()),
+            },
+            message: "No portable bundle file selected.".to_string(),
+            logs: pre_logs,
+            error: Some("empty bundle path".to_string()),
+        };
+    }
+
+    let selected_path = PathBuf::from(selected);
+    let prepared_bundle =
+        match try_prepare_windows_bundle_from_selected_zip(&app, &mut pre_logs, &selected_path) {
+            Ok(Some(bundle)) => bundle,
+            Ok(None) => {
+                return BootstrapStatus {
+                    ready: false,
+                    installed: false,
+                    initialized: false,
+                    web: OfficialWebStatus {
+                        ready: false,
+                        installed: false,
+                        running: false,
+                        started: false,
+                        url: OFFICIAL_WEB_URL.to_string(),
+                        command_hint: "openclaw gateway".to_string(),
+                        message: "Selected file does not contain openclaw-bundle payload."
+                            .to_string(),
+                        error: Some("bundle payload missing".to_string()),
+                    },
+                    message: "Selected file does not contain openclaw-bundle payload.".to_string(),
+                    logs: pre_logs,
+                    error: Some("bundle payload missing".to_string()),
+                };
+            }
+            Err(error) => {
+                return BootstrapStatus {
+                    ready: false,
+                    installed: false,
+                    initialized: false,
+                    web: OfficialWebStatus {
+                        ready: false,
+                        installed: false,
+                        running: false,
+                        started: false,
+                        url: OFFICIAL_WEB_URL.to_string(),
+                        command_hint: "openclaw gateway".to_string(),
+                        message: "Failed to prepare selected bundle.".to_string(),
+                        error: Some(error.clone()),
+                    },
+                    message: "Failed to prepare selected bundle.".to_string(),
+                    logs: pre_logs,
+                    error: Some(error),
+                };
+            }
+        };
+
+    match install_openclaw_from_bundle_dir(&app, &mut pre_logs, &prepared_bundle) {
+        Ok(true) => {
+            push_bootstrap_log(
+                &app,
+                &mut pre_logs,
+                "Manual portable payload installed, continuing bootstrap.",
+            );
+        }
+        Ok(false) => {
+            return BootstrapStatus {
+                ready: false,
+                installed: false,
+                initialized: false,
+                web: OfficialWebStatus {
+                    ready: false,
+                    installed: false,
+                    running: false,
+                    started: false,
+                    url: OFFICIAL_WEB_URL.to_string(),
+                    command_hint: "openclaw gateway".to_string(),
+                    message: "Selected bundle payload is incomplete.".to_string(),
+                    error: Some("bundle payload incomplete".to_string()),
+                },
+                message: "Selected bundle payload is incomplete.".to_string(),
+                logs: pre_logs,
+                error: Some("bundle payload incomplete".to_string()),
+            };
+        }
+        Err(error) => {
+            return BootstrapStatus {
+                ready: false,
+                installed: false,
+                initialized: false,
+                web: OfficialWebStatus {
+                    ready: false,
+                    installed: false,
+                    running: false,
+                    started: false,
+                    url: OFFICIAL_WEB_URL.to_string(),
+                    command_hint: "openclaw gateway".to_string(),
+                    message: "Failed to install selected bundle payload.".to_string(),
+                    error: Some(error.clone()),
+                },
+                message: "Failed to install selected bundle payload.".to_string(),
+                logs: pre_logs,
+                error: Some(error),
+            };
+        }
+    }
+
+    let mut status = bootstrap_openclaw(app.clone()).await;
+    let mut merged_logs = pre_logs;
+    merged_logs.append(&mut status.logs);
+    status.logs = merged_logs;
+    status
+}
+
+#[tauri::command]
 fn reuse_local_codex_auth(set_default_model: Option<bool>) -> LocalCodexReuseResult {
     match sync_local_codex_auth_to_openclaw(set_default_model.unwrap_or(true)) {
         Ok(result) => result,
@@ -3242,6 +3534,8 @@ fn main() {
             start_oauth_login,
             check_ollama,
             bootstrap_openclaw,
+            select_windows_portable_bundle_file,
+            bootstrap_openclaw_with_selected_bundle,
             ensure_official_web_ready,
             open_official_web_window,
             get_browser_mode_status,

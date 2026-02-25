@@ -15,6 +15,7 @@ export default function Bootstrap({ onStatus, onReady }: Props) {
   const [logs, setLogs] = useState<string[]>([]);
   const [liveLogs, setLiveLogs] = useState<string[]>([]);
   const [elapsedSec, setElapsedSec] = useState(0);
+  const isWindows = typeof navigator !== "undefined" && /Windows/i.test(navigator.userAgent);
 
   const visibleLogs = running ? liveLogs : logs.length > 0 ? logs : liveLogs;
 
@@ -28,6 +29,44 @@ export default function Bootstrap({ onStatus, onReady }: Props) {
 
     try {
       const result = await openclawBridge.bootstrapOpenClaw();
+      setLogs(result.logs);
+      setLiveLogs(result.logs);
+      if (result.ready) {
+        onStatus(t("status.bootstrap.ready"));
+        onReady();
+        return;
+      }
+
+      const message = result.error ?? result.message;
+      setError(message);
+      onStatus(`${t("status.bootstrap.failed")}: ${message}`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setError(message);
+      onStatus(`${t("status.bootstrap.failed")}: ${message}`);
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  async function runBootstrapWithSelectedPortable() {
+    setRunning(true);
+    setError("");
+    setLogs([]);
+    setLiveLogs([]);
+    setElapsedSec(0);
+    onStatus(t("status.bootstrap.running"));
+
+    try {
+      const selectedPath = await openclawBridge.selectWindowsPortableBundleFile();
+      if (!selectedPath) {
+        const message = t("bootstrap.manualCancelled");
+        setError(message);
+        onStatus(message);
+        return;
+      }
+
+      const result = await openclawBridge.bootstrapOpenClawWithSelectedBundle(selectedPath);
       setLogs(result.logs);
       setLiveLogs(result.logs);
       if (result.ready) {
@@ -127,6 +166,11 @@ export default function Bootstrap({ onStatus, onReady }: Props) {
           <button type="button" className="primary" onClick={() => void runBootstrap()}>
             {t("bootstrap.retry")}
           </button>
+          {isWindows ? (
+            <button type="button" onClick={() => void runBootstrapWithSelectedPortable()}>
+              {t("bootstrap.selectPortable")}
+            </button>
+          ) : null}
         </div>
       ) : null}
     </section>
