@@ -15,6 +15,24 @@ const bundleDir = path.resolve(desktopRoot, "src-tauri", "bundle", "resources", 
 const tempDir = path.resolve(desktopRoot, ".tmp", "openclaw-bundle");
 const OPENCLAW_MIN_NODE = "22.12.0";
 const RUN_MAX_BUFFER = Number(process.env.OPENCLAW_BUNDLE_RUN_MAX_BUFFER || 128 * 1024 * 1024);
+const REQUESTED_NODE_ARCH = normalizeNodeArch(process.env.OPENCLAW_BUNDLE_NODE_ARCH);
+
+function normalizeNodeArch(rawArch) {
+  const value = String(rawArch ?? "").trim().toLowerCase();
+  if (!value) {
+    return null;
+  }
+  if (value === "x64" || value === "x86_64" || value === "amd64") {
+    return "x64";
+  }
+  if (value === "arm64" || value === "aarch64") {
+    return "arm64";
+  }
+  if (value === "ia32" || value === "x86") {
+    return "ia32";
+  }
+  throw new Error(`Unsupported OPENCLAW_BUNDLE_NODE_ARCH value: ${rawArch}`);
+}
 
 function run(cmd, args, opts = {}) {
   const useShell = process.platform === "win32" && cmd === "npm";
@@ -211,18 +229,32 @@ async function resolveBundledNodeRuntime() {
   const customNode = process.env.OPENCLAW_BUNDLE_NODE;
   if (customNode && fs.existsSync(customNode)) {
     const customVersion = run(customNode, ["-v"]);
+    let customArch = process.arch;
+    try {
+      customArch = run(customNode, ["-p", "process.arch"]).trim() || process.arch;
+    } catch {
+      customArch = process.arch;
+    }
     if (versionGte(customVersion, OPENCLAW_MIN_NODE)) {
       return {
         nodePath: customNode,
         nodeVersion: customVersion,
-        nodeSource: "env:OPENCLAW_BUNDLE_NODE"
+        nodeSource: "env:OPENCLAW_BUNDLE_NODE",
+        nodeArch: customArch
       };
     }
   }
 
   console.log(`[bundle] provisioning portable node@${OPENCLAW_MIN_NODE} runtime...`);
+  if (REQUESTED_NODE_ARCH) {
+    console.log(`[bundle] requested node arch: ${REQUESTED_NODE_ARCH}`);
+  }
   const nodeProvisionPrefix = path.join(tempDir, "node-runtime");
   await ensureCleanDir(nodeProvisionPrefix);
+  const installEnv = { ...process.env };
+  if (REQUESTED_NODE_ARCH) {
+    installEnv.npm_config_arch = REQUESTED_NODE_ARCH;
+  }
   run("npm", [
     "install",
     "--prefix",
@@ -231,24 +263,35 @@ async function resolveBundledNodeRuntime() {
     "--no-fund",
     "--loglevel=error",
     `node@${OPENCLAW_MIN_NODE}`
-  ]);
+  ], { env: installEnv });
 
   const bundledNodePath = process.platform === "win32"
     ? path.join(nodeProvisionPrefix, "node_modules", "node", "bin", "node.exe")
     : path.join(nodeProvisionPrefix, "node_modules", "node", "bin", "node");
   ensureFile(bundledNodePath, "bundled node runtime");
 
-  const bundledNodeVersion = run(bundledNodePath, ["-v"]);
-  if (!versionGte(bundledNodeVersion, OPENCLAW_MIN_NODE)) {
-    throw new Error(
-      `bundled node ${bundledNodeVersion} does not satisfy >=${OPENCLAW_MIN_NODE}`
+  const effectiveNodeArch = REQUESTED_NODE_ARCH ?? process.arch;
+  const isCrossArchBinary = effectiveNodeArch !== process.arch;
+  let bundledNodeVersion;
+  if (isCrossArchBinary) {
+    console.log(
+      `[bundle] skip executing cross-arch node binary (${effectiveNodeArch}) on host ${process.arch}`
     );
+    bundledNodeVersion = `v${OPENCLAW_MIN_NODE}`;
+  } else {
+    bundledNodeVersion = run(bundledNodePath, ["-v"]);
+    if (!versionGte(bundledNodeVersion, OPENCLAW_MIN_NODE)) {
+      throw new Error(
+        `bundled node ${bundledNodeVersion} does not satisfy >=${OPENCLAW_MIN_NODE}`
+      );
+    }
   }
 
   return {
     nodePath: bundledNodePath,
     nodeVersion: bundledNodeVersion,
-    nodeSource: `npm:node@${OPENCLAW_MIN_NODE}`
+    nodeSource: `npm:node@${OPENCLAW_MIN_NODE}`,
+    nodeArch: effectiveNodeArch
   };
 }
 
@@ -340,6 +383,10 @@ async function main() {
 
     if (process.env.OPENCLAW_BUNDLE_SKIP_VERIFY === "1") {
       console.log("[bundle] skip prefix verification because OPENCLAW_BUNDLE_SKIP_VERIFY=1");
+    } else if (runtime.nodeArch !== process.arch) {
+      console.log(
+        `[bundle] skip prefix verification for cross-arch node bundle ${runtime.nodeArch} on host ${process.arch}`
+      );
     } else {
       console.log("[bundle] verifying bundled prefix snapshot...");
       const verifyPrefix = path.join(tempDir, "verify-prefix");
@@ -375,7 +422,7 @@ async function main() {
     openclawSource: packed.source,
     nodeVersion: runtime.nodeVersion,
     nodeSource: runtime.nodeSource,
-    nodePlatform: `${process.platform}-${process.arch}`,
+    nodePlatform: `${process.platform}-${runtime.nodeArch}`,
     prefixAvailable,
     files: {
       openclawTgz: "openclaw.tgz",

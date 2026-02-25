@@ -21,15 +21,8 @@ jobs:
       matrix:
         include:
           - os: macos-14
-            platform: macos-arm64
+            platform: macos
             family: macos
-            tauri_target: aarch64-apple-darwin
-            arch: aarch64
-          - os: macos-13
-            platform: macos-x64
-            family: macos
-            tauri_target: x86_64-apple-darwin
-            arch: x64
           - os: windows-latest
             platform: windows
             family: windows
@@ -76,63 +69,86 @@ jobs:
           OPENCLAW_BUNDLE_SKIP_VERIFY: "1"
           APPLE_SIGNING_IDENTITY: "-"
         run: |
-          npm run prepare:openclaw-bundle
-          npx tauri build --target "${{ matrix.tauri_target }}" --bundles app,dmg
-
-          BUNDLE_ROOT="src-tauri/target/${{ matrix.tauri_target }}/release/bundle"
-          if [ ! -d "$BUNDLE_ROOT" ]; then
-            BUNDLE_ROOT="src-tauri/target/release/bundle"
-          fi
-          if [ ! -d "$BUNDLE_ROOT" ]; then
-            echo "No bundle directory found for target: ${{ matrix.tauri_target }}"
-            exit 1
-          fi
-
-          APP_PATH="$(find "$BUNDLE_ROOT/macos" -maxdepth 1 -name '*.app' | head -n 1)"
-          if [ -z "$APP_PATH" ]; then
-            echo "No macOS app bundle generated."
-            exit 1
-          fi
-          echo "Verifying app signature: $APP_PATH"
-          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
-
-          DMG_PATH="$(find "$BUNDLE_ROOT/dmg" -maxdepth 1 -name '*.dmg' | head -n 1)"
-          if [ -z "$DMG_PATH" ]; then
-            echo "No DMG generated."
-            exit 1
-          fi
-          MOUNT_DIR="$(mktemp -d)"
-          hdiutil attach -nobrowse -mountpoint "$MOUNT_DIR" "$DMG_PATH"
-          APP_IN_DMG="$(find "$MOUNT_DIR" -maxdepth 1 -name '*.app' | head -n 1)"
-          if [ -z "$APP_IN_DMG" ]; then
-            hdiutil detach "$MOUNT_DIR" || true
-            echo "No app bundle found inside DMG."
-            exit 1
-          fi
-          echo "Verifying app signature inside DMG: $APP_IN_DMG"
-          codesign --verify --deep --strict --verbose=2 "$APP_IN_DMG"
-          hdiutil detach "$MOUNT_DIR"
+          rustup target add x86_64-apple-darwin
 
           STAGE_DIR="release-stage/${{ matrix.platform }}"
           mkdir -p "$STAGE_DIR"
 
-          APP_TGZ="$(find "$BUNDLE_ROOT/macos" -maxdepth 1 -name '*.app.tar.gz' | head -n 1)"
-          if [ -z "$APP_TGZ" ]; then
-            echo "No updater app tarball generated."
-            exit 1
-          fi
-          APP_TGZ_RENAMED="openclaw-desktop_${{ matrix.arch }}.app.tar.gz"
-          cp "$APP_TGZ" "$STAGE_DIR/$APP_TGZ_RENAMED"
-          if [ ! -f "$APP_TGZ.sig" ]; then
-            echo "No updater app tarball signature generated."
-            exit 1
-          fi
-          cp "$APP_TGZ.sig" "$STAGE_DIR/$APP_TGZ_RENAMED.sig"
+          build_and_stage_macos_target() {
+            local rust_target="$1"
+            local node_arch="$2"
+            local arch_alias="$3"
 
-          cp "$BUNDLE_ROOT/dmg/"*.dmg "$STAGE_DIR/"
-          if ls "$BUNDLE_ROOT/dmg/"*.sig >/dev/null 2>&1; then
-            cp "$BUNDLE_ROOT/dmg/"*.sig "$STAGE_DIR/"
-          fi
+            OPENCLAW_BUNDLE_NODE_ARCH="$node_arch" npm run prepare:openclaw-bundle
+            npx tauri build --target "$rust_target" --bundles app,dmg
+
+            local bundle_root="src-tauri/target/$rust_target/release/bundle"
+            if [ ! -d "$bundle_root" ]; then
+              bundle_root="src-tauri/target/release/bundle"
+            fi
+            if [ ! -d "$bundle_root" ]; then
+              echo "No bundle directory found for target: $rust_target"
+              exit 1
+            fi
+
+            local app_path
+            app_path="$(find "$bundle_root/macos" -maxdepth 1 -name '*.app' | head -n 1)"
+            if [ -z "$app_path" ]; then
+              echo "No macOS app bundle generated for target: $rust_target"
+              exit 1
+            fi
+            echo "Verifying app signature: $app_path"
+            codesign --verify --deep --strict --verbose=2 "$app_path"
+
+            local dmg_path
+            dmg_path="$(find "$bundle_root/dmg" -maxdepth 1 -name '*.dmg' | head -n 1)"
+            if [ -z "$dmg_path" ]; then
+              echo "No DMG generated for target: $rust_target"
+              exit 1
+            fi
+
+            local mount_dir
+            mount_dir="$(mktemp -d)"
+            hdiutil attach -nobrowse -mountpoint "$mount_dir" "$dmg_path"
+            local app_in_dmg
+            app_in_dmg="$(find "$mount_dir" -maxdepth 1 -name '*.app' | head -n 1)"
+            if [ -z "$app_in_dmg" ]; then
+              hdiutil detach "$mount_dir" || true
+              echo "No app bundle found inside DMG for target: $rust_target"
+              exit 1
+            fi
+            echo "Verifying app signature inside DMG: $app_in_dmg"
+            codesign --verify --deep --strict --verbose=2 "$app_in_dmg"
+            hdiutil detach "$mount_dir"
+
+            local app_tgz
+            app_tgz="$(find "$bundle_root/macos" -maxdepth 1 -name '*.app.tar.gz' | head -n 1)"
+            if [ -z "$app_tgz" ]; then
+              echo "No updater app tarball generated for target: $rust_target"
+              exit 1
+            fi
+            local app_tgz_renamed="openclaw-desktop_${arch_alias}.app.tar.gz"
+            cp "$app_tgz" "$STAGE_DIR/$app_tgz_renamed"
+            if [ ! -f "$app_tgz.sig" ]; then
+              echo "No updater app tarball signature generated for target: $rust_target"
+              exit 1
+            fi
+            cp "$app_tgz.sig" "$STAGE_DIR/$app_tgz_renamed.sig"
+
+            local dmg_basename
+            dmg_basename="$(basename "$dmg_path")"
+            if [ -e "$STAGE_DIR/$dmg_basename" ]; then
+              echo "Duplicated DMG asset name: $dmg_basename"
+              exit 1
+            fi
+            cp "$dmg_path" "$STAGE_DIR/$dmg_basename"
+            if [ -f "$dmg_path.sig" ]; then
+              cp "$dmg_path.sig" "$STAGE_DIR/$dmg_basename.sig"
+            fi
+          }
+
+          build_and_stage_macos_target "aarch64-apple-darwin" "arm64" "aarch64"
+          build_and_stage_macos_target "x86_64-apple-darwin" "x64" "x64"
 
       - name: Build installers (Windows)
         if: matrix.family == 'windows'
