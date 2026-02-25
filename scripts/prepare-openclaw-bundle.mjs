@@ -68,6 +68,24 @@ function ensureFile(p, label) {
   }
 }
 
+function resolveNpmDir() {
+  const npmRoot = run("npm", ["root", "-g"]);
+  const candidate = path.join(npmRoot, "npm");
+  if (fs.existsSync(candidate)) {
+    return candidate;
+  }
+
+  const prefix = run("npm", ["config", "get", "prefix"]);
+  const extra = process.platform === "win32"
+    ? path.join(prefix, "node_modules", "npm")
+    : path.join(prefix, "lib", "node_modules", "npm");
+  if (fs.existsSync(extra)) {
+    return extra;
+  }
+
+  throw new Error("Unable to locate npm directory for offline bundle");
+}
+
 function resolveInstalledOpenclaw(prefix) {
   const candidates = process.platform === "win32"
     ? [
@@ -276,7 +294,14 @@ async function main() {
   }
   ensureFile(nodeTarget, "bundled node runtime");
 
-  const npmDir = await resolveBundledNpmDir();
+  let npmDir;
+  try {
+    npmDir = resolveNpmDir();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.log(`[bundle] system npm dir unavailable (${message}), provisioning standalone npm...`);
+    npmDir = await resolveBundledNpmDir();
+  }
   const npmTarget = path.join(bundleDir, "npm");
   await fsp.rm(npmTarget, { recursive: true, force: true });
   await fsp.cp(npmDir, npmTarget, {
