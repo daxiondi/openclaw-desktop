@@ -17,7 +17,8 @@ const OPENCLAW_MIN_NODE = "22.12.0";
 const RUN_MAX_BUFFER = Number(process.env.OPENCLAW_BUNDLE_RUN_MAX_BUFFER || 128 * 1024 * 1024);
 
 function run(cmd, args, opts = {}) {
-  const result = spawnSync(cmd, args, {
+  const resolvedCmd = process.platform === "win32" && cmd === "npm" ? "npm.cmd" : cmd;
+  const result = spawnSync(resolvedCmd, args, {
     cwd: opts.cwd,
     env: opts.env ?? process.env,
     encoding: "utf8",
@@ -26,14 +27,14 @@ function run(cmd, args, opts = {}) {
   });
 
   if (result.error) {
-    throw new Error(`${cmd} ${args.join(" ")} failed\n${String(result.error)}`);
+    throw new Error(`${resolvedCmd} ${args.join(" ")} failed\n${String(result.error)}`);
   }
 
   if (result.status !== 0) {
     const out = (result.stdout ?? "").trim();
     const err = (result.stderr ?? "").trim();
     const detail = [out, err].filter(Boolean).join("\n");
-    throw new Error(`${cmd} ${args.join(" ")} failed${detail ? `\n${detail}` : ""}`);
+    throw new Error(`${resolvedCmd} ${args.join(" ")} failed${detail ? `\n${detail}` : ""}`);
   }
 
   return (result.stdout ?? "").trim();
