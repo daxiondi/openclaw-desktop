@@ -56,6 +56,8 @@ const OPENCLAW_INSTALL_SH: &str =
      bash -s -- --install-method npm --no-prompt --no-onboard";
 const OPENCLAW_INSTALL_PS1: &str =
     "& ([scriptblock]::Create((iwr -useb https://openclaw.ai/install.ps1))) -NoOnboard";
+const OPENCLAW_WINDOWS_PORTABLE_BUNDLE_URL: &str =
+    "https://github.com/daxiondi/openclaw-desktop/releases/latest/download/openclaw-desktop-windows-portable.zip";
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -2094,11 +2096,134 @@ fn prefix_has_openclaw_binary(prefix: &PathBuf) -> bool {
     candidates.into_iter().any(|candidate| candidate.exists())
 }
 
+fn bundle_payload_usable(bundle_dir: &PathBuf) -> bool {
+    let prepared_prefix = bundle_dir.join("prefix");
+    if prepared_prefix.exists() {
+        return true;
+    }
+
+    let Some(_node_bin) = resolve_bundled_node_binary(bundle_dir) else {
+        return false;
+    };
+    let npm_cli = bundle_dir.join("npm").join("bin").join("npm-cli.js");
+    let openclaw_tgz = bundle_dir.join("openclaw.tgz");
+    let npm_cache = bundle_dir.join("npm-cache");
+    npm_cli.exists() && openclaw_tgz.exists() && npm_cache.exists()
+}
+
+fn find_openclaw_bundle_dir(root: &PathBuf) -> Option<PathBuf> {
+    let mut stack = vec![root.clone()];
+    while let Some(current) = stack.pop() {
+        let Ok(read_dir) = fs::read_dir(&current) else {
+            continue;
+        };
+        for entry in read_dir.flatten() {
+            let path = entry.path();
+            let Ok(meta) = entry.metadata() else {
+                continue;
+            };
+            if !meta.is_dir() {
+                continue;
+            }
+            let is_openclaw_bundle = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| name == "openclaw-bundle")
+                .unwrap_or(false);
+            if is_openclaw_bundle {
+                return Some(path);
+            }
+            stack.push(path);
+        }
+    }
+    None
+}
+
+fn try_prepare_windows_downloaded_bundle(
+    app: &tauri::AppHandle,
+    logs: &mut Vec<String>,
+) -> Result<Option<PathBuf>, String> {
+    if !cfg!(target_os = "windows") {
+        return Ok(None);
+    }
+
+    let cache_root = resolve_openclaw_agent_dir().join("offline-bundle-cache");
+    fs::create_dir_all(&cache_root).map_err(|err| err.to_string())?;
+
+    let zip_path = cache_root.join("openclaw-desktop-windows-portable.zip");
+    let extract_root = cache_root.join("portable-extract");
+    let target_bundle = cache_root.join("openclaw-bundle");
+
+    push_bootstrap_log(
+        app,
+        logs,
+        format!(
+            "Bundled payload missing; downloading offline payload from {}",
+            OPENCLAW_WINDOWS_PORTABLE_BUNDLE_URL
+        ),
+    );
+
+    let zip_escaped = zip_path.to_string_lossy().replace('\'', "''");
+    let extract_escaped = extract_root.to_string_lossy().replace('\'', "''");
+    let url_escaped = OPENCLAW_WINDOWS_PORTABLE_BUNDLE_URL.replace('\'', "''");
+    let download_script = format!(
+        "$ErrorActionPreference='Stop'; \
+         [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; \
+         if (Test-Path '{extract}') {{ Remove-Item -LiteralPath '{extract}' -Recurse -Force; }}; \
+         New-Item -ItemType Directory -Path '{extract}' -Force | Out-Null; \
+         Invoke-WebRequest -UseBasicParsing -Uri '{url}' -OutFile '{zip}'; \
+         Expand-Archive -LiteralPath '{zip}' -DestinationPath '{extract}' -Force;",
+        extract = extract_escaped,
+        url = url_escaped,
+        zip = zip_escaped,
+    );
+
+    let output = Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            &download_script,
+        ])
+        .output()
+        .map_err(|err| format!("Failed to run portable bundle download script: {}", err))?;
+    if !output.status.success() {
+        let detail = summarize_output(&output.stdout, &output.stderr);
+        if detail.is_empty() {
+            return Ok(None);
+        }
+        return Err(format!("Portable bundle download failed: {}", detail));
+    }
+
+    let Some(found_bundle) = find_openclaw_bundle_dir(&extract_root) else {
+        push_bootstrap_log(
+            app,
+            logs,
+            "Downloaded portable package does not contain openclaw-bundle directory.",
+        );
+        return Ok(None);
+    };
+
+    copy_dir_with_native_tool(&found_bundle, &target_bundle)?;
+    let canonical = target_bundle.canonicalize().unwrap_or(target_bundle);
+    push_bootstrap_log(
+        app,
+        logs,
+        format!("Offline payload downloaded to {}", canonical.to_string_lossy()),
+    );
+    Ok(Some(canonical))
+}
+
 fn install_openclaw_from_bundle(
     app: &tauri::AppHandle,
     logs: &mut Vec<String>,
 ) -> Result<bool, String> {
-    let Some(bundle_dir) = resolve_bundled_openclaw_dir(app) else {
+    let mut bundle_dir = if let Some(found) = resolve_bundled_openclaw_dir(app) {
+        found
+    } else if let Some(downloaded) = try_prepare_windows_downloaded_bundle(app, logs)? {
+        downloaded
+    } else {
         push_bootstrap_log(
             app,
             logs,
@@ -2106,6 +2231,17 @@ fn install_openclaw_from_bundle(
         );
         return Ok(false);
     };
+
+    if !bundle_payload_usable(&bundle_dir) {
+        push_bootstrap_log(
+            app,
+            logs,
+            "Bundled payload is incomplete; trying downloadable offline payload.",
+        );
+        if let Some(downloaded) = try_prepare_windows_downloaded_bundle(app, logs)? {
+            bundle_dir = downloaded;
+        }
+    }
 
     let home = std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
