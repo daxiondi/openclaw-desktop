@@ -1788,6 +1788,216 @@ fn run_openclaw(
     Err(format!("{} failed: {}", cmd, detail))
 }
 
+fn path_to_string(path: &PathBuf) -> String {
+    path.to_string_lossy().to_string()
+}
+
+fn append_text_once(path: &PathBuf, marker: &str, snippet: &str) -> Result<bool, String> {
+    let mut content = if path.exists() {
+        fs::read_to_string(path).map_err(|err| err.to_string())?
+    } else {
+        String::new()
+    };
+    if content.contains(marker) {
+        return Ok(false);
+    }
+    if !content.is_empty() && !content.ends_with('\n') {
+        content.push('\n');
+    }
+    content.push_str(snippet);
+    fs::write(path, content).map_err(|err| err.to_string())?;
+    Ok(true)
+}
+
+fn ensure_unix_shell_path_config(home: &PathBuf, logs: &mut Vec<String>) -> Result<(), String> {
+    let marker = "# >>> openclaw-desktop cli >>>";
+    let snippet = "\
+# >>> openclaw-desktop cli >>>\n\
+export PATH=\"$HOME/.openclaw/bin:$HOME/.local/bin:$PATH\"\n\
+# <<< openclaw-desktop cli <<<\n";
+    let rc_files = [".zprofile", ".zshrc", ".bash_profile", ".bashrc", ".profile"];
+    let mut touched: Vec<String> = Vec::new();
+    for rc in rc_files {
+        let rc_path = home.join(rc);
+        match append_text_once(&rc_path, marker, snippet) {
+            Ok(true) => touched.push(path_to_string(&rc_path)),
+            Ok(false) => {}
+            Err(error) => logs.push(format!(
+                "WARN: failed to update shell profile {}: {}",
+                rc, error
+            )),
+        }
+    }
+    if !touched.is_empty() {
+        logs.push(format!(
+            "Updated shell PATH profiles: {}",
+            touched.join(", ")
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_windows_user_path_contains(local_bin: &PathBuf) -> Result<(), String> {
+    let local_bin_str = path_to_string(local_bin).replace('\'', "''");
+    let script = format!(
+        "$localBin = '{}'\n\
+         $current = [Environment]::GetEnvironmentVariable('Path','User')\n\
+         if ([string]::IsNullOrWhiteSpace($current)) {{\n\
+           [Environment]::SetEnvironmentVariable('Path', $localBin, 'User')\n\
+         }} else {{\n\
+           $parts = $current -split ';' | ForEach-Object {{ $_.Trim() }} | Where-Object {{ $_ -ne '' }}\n\
+           $exists = $parts | Where-Object {{ $_.ToLowerInvariant() -eq $localBin.ToLowerInvariant() }}\n\
+           if (-not $exists) {{\n\
+             [Environment]::SetEnvironmentVariable('Path', \"$localBin;\" + $current, 'User')\n\
+           }}\n\
+         }}\n",
+        local_bin_str
+    );
+    let output = Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            &script,
+        ])
+        .output()
+        .map_err(|err| err.to_string())?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "failed to update user PATH: {}",
+            summarize_output(&output.stdout, &output.stderr)
+        ))
+    }
+}
+
+fn ensure_openclaw_terminal_command(
+    app: &tauri::AppHandle,
+    logs: &mut Vec<String>,
+    resolved_binary: &str,
+) -> Result<(), String> {
+    if let Ok((true, _)) = run_command("openclaw", &["--version"]) {
+        push_bootstrap_log(app, logs, "Terminal command already available: openclaw");
+        return Ok(());
+    }
+
+    let Some(home) = resolve_user_home() else {
+        return Err("Cannot resolve user home path for terminal launcher.".to_string());
+    };
+    let local_bin = home.join(".local").join("bin");
+    fs::create_dir_all(&local_bin).map_err(|err| err.to_string())?;
+
+    if cfg!(target_os = "windows") {
+        let launcher = local_bin.join("openclaw.cmd");
+        let mut script = String::new();
+        script.push_str("@echo off\r\n");
+        script.push_str("setlocal\r\n");
+        script.push_str("set \"TARGET=%USERPROFILE%\\.openclaw\\bin\\openclaw.cmd\"\r\n");
+        script.push_str("if exist \"%TARGET%\" (\r\n");
+        script.push_str("  call \"%TARGET%\" %*\r\n");
+        script.push_str("  exit /b %ERRORLEVEL%\r\n");
+        script.push_str(")\r\n");
+        script.push_str("set \"TARGET=%USERPROFILE%\\.openclaw\\bin\\openclaw.exe\"\r\n");
+        script.push_str("if exist \"%TARGET%\" (\r\n");
+        script.push_str("  \"%TARGET%\" %*\r\n");
+        script.push_str("  exit /b %ERRORLEVEL%\r\n");
+        script.push_str(")\r\n");
+        let fallback = PathBuf::from(resolved_binary);
+        if fallback.is_absolute() {
+            script.push_str(&format!("\"{}\" %*\r\n", fallback.to_string_lossy()));
+            script.push_str("exit /b %ERRORLEVEL%\r\n");
+        } else {
+            script.push_str("echo OpenClaw CLI not found under %USERPROFILE%\\.openclaw\\bin.\r\n");
+            script.push_str("exit /b 1\r\n");
+        }
+        fs::write(&launcher, script).map_err(|err| err.to_string())?;
+        ensure_windows_user_path_contains(&local_bin)?;
+        push_bootstrap_log(
+            app,
+            logs,
+            format!(
+                "Prepared terminal launcher at {} and updated user PATH.",
+                launcher.to_string_lossy()
+            ),
+        );
+        match run_command(&launcher.to_string_lossy(), &["--version"]) {
+            Ok((true, _)) => push_bootstrap_log(app, logs, "CLI launcher validation passed."),
+            Ok((false, output)) => push_bootstrap_log(
+                app,
+                logs,
+                format!(
+                    "WARN: CLI launcher validation failed: {}",
+                    if output.is_empty() { "no output" } else { &output }
+                ),
+            ),
+            Err(error) => push_bootstrap_log(
+                app,
+                logs,
+                format!("WARN: CLI launcher validation failed: {}", error),
+            ),
+        }
+    } else {
+        let launcher = local_bin.join("openclaw");
+        let mut script = String::new();
+        script.push_str("#!/bin/sh\n");
+        script.push_str("TARGET=\"$HOME/.openclaw/bin/openclaw\"\n");
+        script.push_str("if [ -x \"$TARGET\" ]; then\n");
+        script.push_str("  exec \"$TARGET\" \"$@\"\n");
+        script.push_str("fi\n");
+        let fallback = PathBuf::from(resolved_binary);
+        if fallback.is_absolute() {
+            script.push_str(&format!("exec \"{}\" \"$@\"\n", fallback.to_string_lossy()));
+        } else {
+            script.push_str("echo \"OpenClaw CLI not found under $HOME/.openclaw/bin\" >&2\n");
+            script.push_str("exit 1\n");
+        }
+        fs::write(&launcher, script).map_err(|err| err.to_string())?;
+        #[cfg(unix)]
+        {
+            fs::set_permissions(&launcher, fs::Permissions::from_mode(0o755))
+                .map_err(|err| err.to_string())?;
+        }
+        ensure_unix_shell_path_config(&home, logs)?;
+        push_bootstrap_log(
+            app,
+            logs,
+            format!(
+                "Prepared terminal launcher at {} and synced shell PATH config.",
+                launcher.to_string_lossy()
+            ),
+        );
+        match run_command(&launcher.to_string_lossy(), &["--version"]) {
+            Ok((true, _)) => push_bootstrap_log(app, logs, "CLI launcher validation passed."),
+            Ok((false, output)) => push_bootstrap_log(
+                app,
+                logs,
+                format!(
+                    "WARN: CLI launcher validation failed: {}",
+                    if output.is_empty() { "no output" } else { &output }
+                ),
+            ),
+            Err(error) => push_bootstrap_log(
+                app,
+                logs,
+                format!("WARN: CLI launcher validation failed: {}", error),
+            ),
+        }
+    }
+
+    match run_command("openclaw", &["--version"]) {
+        Ok((true, _)) => push_bootstrap_log(app, logs, "Terminal command ready: openclaw"),
+        _ => push_bootstrap_log(
+            app,
+            logs,
+            "Terminal PATH may need refresh; reopen terminal to use `openclaw`.",
+        ),
+    }
+
+    Ok(())
+}
+
 fn check_models_auth_ready(app: &tauri::AppHandle, binary: &str, logs: &mut Vec<String>) -> bool {
     match run_command(binary, &["models", "status", "--check"]) {
         Ok((true, _)) => {
@@ -2909,6 +3119,13 @@ async fn bootstrap_openclaw(app: tauri::AppHandle) -> BootstrapStatus {
     };
 
     push_bootstrap_log(&app, &mut logs, format!("Using CLI binary: {}", binary));
+    if let Err(error) = ensure_openclaw_terminal_command(&app, &mut logs, &binary) {
+        push_bootstrap_log(
+            &app,
+            &mut logs,
+            format!("WARN: failed to prepare terminal `openclaw` command: {}", error),
+        );
+    }
     if let Err(error) = ensure_browser_defaults(&app, &mut logs) {
         push_bootstrap_log(
             &app,
