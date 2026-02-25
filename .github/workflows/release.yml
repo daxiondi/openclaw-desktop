@@ -175,7 +175,14 @@ jobs:
             Add-Type -AssemblyName System.IO.Compression.FileSystem
             $zip = [System.IO.Compression.ZipFile]::OpenRead($ZipPath)
             try {
-              $entries = $zip.Entries | ForEach-Object { $_.FullName.Replace('\', '/') }
+              $entries = $zip.Entries | ForEach-Object {
+                $normalized = $_.FullName.Replace('\', '/')
+                $normalized = $normalized.TrimStart('/')
+                if ($normalized.StartsWith("./")) {
+                  $normalized = $normalized.Substring(2)
+                }
+                $normalized
+              }
               $requiredEntries = @(
                 "bundle/resources/openclaw-bundle/manifest.json",
                 "bundle/resources/openclaw-bundle/openclaw.tgz",
