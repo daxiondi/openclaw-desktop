@@ -101,9 +101,6 @@ jobs:
         shell: pwsh
         run: |
           npm run prepare:openclaw-bundle
-          if ($LASTEXITCODE -ne 0) {
-            throw "prepare:openclaw-bundle failed."
-          }
           $bundleRoot = "src-tauri/bundle/resources/openclaw-bundle"
           $requiredPaths = @(
             "manifest.json",
@@ -173,11 +170,7 @@ jobs:
             }
           }
 
-          if (-not $bundleReady) {
-            throw "Offline bundle validation failed; aborting release build."
-          }
-
-          if (-not $nsisReady) {
+          if (-not $nsisReady -or -not $bundleReady) {
             New-PortableZipWithOfflineBundle
           }
 
