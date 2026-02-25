@@ -28,7 +28,7 @@ The goal is simple: install once, use immediately.
 
 Scan the QR code to join the `openclaw` community chat group:
 
-![openclaw community group QR code](./src/assets/feedback-group-qr.png)
+![openclaw community group QR code](./src/assets/wechat.jpg)
 
 ## In-App Updates (auto-detect + one click)
 

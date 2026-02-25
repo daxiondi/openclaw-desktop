@@ -27,7 +27,7 @@
 
 扫码加入 `openclaw` 交流群：
 
-![openclaw交流群二维码](./src/assets/feedback-group-qr.png)
+![openclaw交流群二维码](./src/assets/wechat.jpg)
 
 ## 在线更新（自动检测 + 一键更新）
 
