@@ -116,24 +116,6 @@ async function ensureUserWritableRecursive(rootDir) {
   }
 }
 
-function resolveNpmDir() {
-  const npmRoot = run("npm", ["root", "-g"]);
-  const candidate = path.join(npmRoot, "npm");
-  if (fs.existsSync(candidate)) {
-    return candidate;
-  }
-
-  const prefix = run("npm", ["config", "get", "prefix"]);
-  const extra = process.platform === "win32"
-    ? path.join(prefix, "node_modules", "npm")
-    : path.join(prefix, "lib", "node_modules", "npm");
-  if (fs.existsSync(extra)) {
-    return extra;
-  }
-
-  throw new Error("Unable to locate npm directory for offline bundle");
-}
-
 function npmPack(args, cwd) {
   const raw = run("npm", ["pack", "--json", ...args], { cwd });
   let parsed;
@@ -249,6 +231,25 @@ async function resolveBundledNodeRuntime() {
   };
 }
 
+async function resolveBundledNpmDir() {
+  const npmProvisionPrefix = path.join(tempDir, "npm-runtime");
+  await ensureCleanDir(npmProvisionPrefix);
+  run("npm", [
+    "install",
+    "--prefix",
+    npmProvisionPrefix,
+    "--no-audit",
+    "--no-fund",
+    "--loglevel=error",
+    "npm@10"
+  ]);
+
+  const npmDir = path.join(npmProvisionPrefix, "node_modules", "npm");
+  const npmCli = path.join(npmDir, "bin", "npm-cli.js");
+  ensureFile(npmCli, "bundled npm cli");
+  return npmDir;
+}
+
 async function main() {
   if (process.env.OPENCLAW_DESKTOP_SKIP_BUNDLE_PREP === "1") {
     console.log("[bundle] skip prepare because OPENCLAW_DESKTOP_SKIP_BUNDLE_PREP=1");
@@ -275,7 +276,7 @@ async function main() {
   }
   ensureFile(nodeTarget, "bundled node runtime");
 
-  const npmDir = resolveNpmDir();
+  const npmDir = await resolveBundledNpmDir();
   const npmTarget = path.join(bundleDir, "npm");
   await fsp.rm(npmTarget, { recursive: true, force: true });
   await fsp.cp(npmDir, npmTarget, {
