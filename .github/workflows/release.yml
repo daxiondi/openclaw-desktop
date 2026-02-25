@@ -321,12 +321,25 @@ jobs:
 
       - name: Validate Windows portable offline payload
         run: |
-          ZIP_PATH="release-assets/openclaw-desktop-windows-portable.zip"
-          if [ ! -f "$ZIP_PATH" ]; then
-            echo "missing portable asset: $ZIP_PATH"
+          set -eo pipefail
+          mapfile -t ZIP_CANDIDATES < <(find release-assets -maxdepth 4 -type f -name '*windows-portable*.zip')
+          if [ "${#ZIP_CANDIDATES[@]}" -eq 0 ]; then
+            echo "missing portable asset under release-assets"
+            ls -R release-assets
             exit 1
           fi
-          unzip -l "$ZIP_PATH" > release-assets/windows-portable-list.txt
+          ZIP_PATH=""
+          for candidate in "${ZIP_CANDIDATES[@]}"; do
+            if [[ "$candidate" == *"openclaw-desktop-windows-portable.zip" ]]; then
+              ZIP_PATH="$candidate"
+              break
+            fi
+          done
+          if [ -z "$ZIP_PATH" ]; then
+            ZIP_PATH="${ZIP_CANDIDATES[0]}"
+          fi
+          echo "using portable asset: $ZIP_PATH"
+          unzip -Z -1 "$ZIP_PATH" | sed -E 's#^([.]/)+##; s#^/##' > release-assets/windows-portable-list.txt
           grep -q "bundle/resources/openclaw-bundle/manifest.json" release-assets/windows-portable-list.txt
           grep -q "bundle/resources/openclaw-bundle/openclaw.tgz" release-assets/windows-portable-list.txt
           grep -q "bundle/resources/openclaw-bundle/node/node.exe" release-assets/windows-portable-list.txt
