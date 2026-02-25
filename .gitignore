@@ -4,5 +4,4 @@ dist
 .DS_Store
 src-tauri/target
 src-tauri/bundle/resources/openclaw-bundle
-agents.md
 .tmp/
