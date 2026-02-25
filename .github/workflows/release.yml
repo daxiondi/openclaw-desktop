@@ -100,54 +100,117 @@ jobs:
           OPENCLAW_BUNDLE_SKIP_VERIFY: "1"
         shell: pwsh
         run: |
-          npm run prepare:openclaw-bundle
+          $ErrorActionPreference = "Stop"
           $bundleRoot = "src-tauri/bundle/resources/openclaw-bundle"
-          $requiredPaths = @(
-            "manifest.json",
-            "openclaw.tgz",
-            "node/node.exe",
-            "npm/bin/npm-cli.js",
-            "prefix"
-          )
-          $bundleReady = $true
-          foreach ($relativePath in $requiredPaths) {
-            $candidate = Join-Path $bundleRoot $relativePath
-            if (!(Test-Path $candidate)) {
-              Write-Output "::warning title=Offline bundle path missing::$candidate"
-              $bundleReady = $false
+
+          function Assert-StepSuccess {
+            param([string]$Label)
+            if ($LASTEXITCODE -ne 0) {
+              throw "$Label failed with exit code $LASTEXITCODE"
             }
           }
 
-          if (Test-Path $bundleRoot) {
-            $bundleSizeBytes = (Get-ChildItem -Path $bundleRoot -Recurse -File | Measure-Object -Property Length -Sum).Sum
-            if ($null -eq $bundleSizeBytes -or $bundleSizeBytes -lt 50MB) {
-              Write-Output "::warning title=Offline bundle suspiciously small::SizeBytes=$bundleSizeBytes Root=$bundleRoot"
-              $bundleReady = $false
+          function Assert-OfflineBundleReady {
+            param([string]$BundleRoot)
+            $requiredPaths = @(
+              "manifest.json",
+              "openclaw.tgz",
+              "node/node.exe",
+              "npm/bin/npm-cli.js",
+              "npm-cache",
+              "prefix"
+            )
+            foreach ($relativePath in $requiredPaths) {
+              $candidate = Join-Path $BundleRoot $relativePath
+              if (!(Test-Path $candidate)) {
+                throw "Offline bundle path missing: $candidate"
+              }
             }
-          } else {
-            Write-Output "::warning title=Offline bundle root missing::$bundleRoot"
-            $bundleReady = $false
+
+            $bundleSizeBytes = (Get-ChildItem -Path $BundleRoot -Recurse -File | Measure-Object -Property Length -Sum).Sum
+            if ($null -eq $bundleSizeBytes -or $bundleSizeBytes -lt 100MB) {
+              throw "Offline bundle suspiciously small: SizeBytes=$bundleSizeBytes Root=$BundleRoot"
+            }
+          }
+
+          function Invoke-PrepareBundleWithRetry {
+            param([int]$MaxAttempts = 3)
+            for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+              Write-Output "Preparing offline bundle (attempt $attempt/$MaxAttempts)..."
+              npm run prepare:openclaw-bundle
+              if ($LASTEXITCODE -eq 0) {
+                try {
+                  Assert-OfflineBundleReady -BundleRoot $bundleRoot
+                  Write-Output "Offline bundle ready: $bundleRoot"
+                  return
+                } catch {
+                  Write-Output "::warning title=Offline bundle validation failed on attempt $attempt::$($_.Exception.Message)"
+                }
+              } else {
+                Write-Output "::warning title=Bundle prepare command failed on attempt $attempt::ExitCode=$LASTEXITCODE"
+              }
+              Start-Sleep -Seconds (2 * $attempt)
+            }
+            throw "Failed to prepare a valid offline bundle after $MaxAttempts attempts."
+          }
+
+          function Copy-DirectoryRobust {
+            param(
+              [string]$Source,
+              [string]$Destination
+            )
+            New-Item -ItemType Directory -Force -Path $Destination | Out-Null
+            robocopy $Source $Destination /E /R:2 /W:2 /NFL /NDL /NJH /NJS /NP
+            $robocopyExit = $LASTEXITCODE
+            if ($robocopyExit -ge 8) {
+              throw "robocopy failed with exit code $robocopyExit (source=$Source, destination=$Destination)"
+            }
+          }
+
+          function Assert-ZipContainsOfflineBundle {
+            param([string]$ZipPath)
+            Add-Type -AssemblyName System.IO.Compression.FileSystem
+            $zip = [System.IO.Compression.ZipFile]::OpenRead($ZipPath)
+            try {
+              $entries = $zip.Entries | ForEach-Object { $_.FullName.Replace('\', '/') }
+              $requiredEntries = @(
+                "bundle/resources/openclaw-bundle/manifest.json",
+                "bundle/resources/openclaw-bundle/openclaw.tgz",
+                "bundle/resources/openclaw-bundle/node/node.exe",
+                "bundle/resources/openclaw-bundle/npm/bin/npm-cli.js"
+              )
+              foreach ($required in $requiredEntries) {
+                if (-not ($entries -contains $required)) {
+                  throw "Portable zip missing required entry: $required"
+                }
+              }
+              $prefixEntries = $entries | Where-Object { $_ -like "bundle/resources/openclaw-bundle/prefix/*" }
+              if ($prefixEntries.Count -eq 0) {
+                throw "Portable zip missing prefix payload entries."
+              }
+            } finally {
+              $zip.Dispose()
+            }
           }
 
           function New-PortableZipWithOfflineBundle {
             npx tauri build --no-bundle
-            if ($LASTEXITCODE -ne 0) {
-              throw "Windows no-bundle build failed."
-            }
+            Assert-StepSuccess "Windows no-bundle build"
 
             $portableDir = "src-tauri/target/release/bundle/portable"
             $portableRoot = Join-Path $portableDir "openclaw-desktop-windows-portable"
             $portableZip = Join-Path $portableDir "openclaw-desktop-windows-portable.zip"
             Remove-Item -Recurse -Force $portableRoot -ErrorAction SilentlyContinue
-            New-Item -ItemType Directory -Force -Path (Join-Path $portableRoot "bundle") | Out-Null
+            New-Item -ItemType Directory -Force -Path (Join-Path $portableRoot "bundle/resources") | Out-Null
             Copy-Item "src-tauri/target/release/openclaw-desktop.exe" (Join-Path $portableRoot "openclaw-desktop.exe") -Force
-            if (!(Test-Path "src-tauri/bundle/resources/openclaw-bundle")) {
-              throw "Portable fallback aborted: offline bundle resources are missing."
-            }
-            Copy-Item "src-tauri/bundle/resources" (Join-Path $portableRoot "bundle/resources") -Recurse -Force
+            Copy-DirectoryRobust -Source "src-tauri/bundle/resources" -Destination (Join-Path $portableRoot "bundle/resources")
+            Assert-OfflineBundleReady -BundleRoot (Join-Path $portableRoot "bundle/resources/openclaw-bundle")
             Remove-Item -Force $portableZip -ErrorAction SilentlyContinue
             Compress-Archive -Path "$portableRoot/*" -DestinationPath $portableZip -Force
+            Assert-ZipContainsOfflineBundle -ZipPath $portableZip
           }
+
+          Invoke-PrepareBundleWithRetry
 
           $nsisLog = "windows-nsis-build.log"
           $nsisReady = $true
@@ -170,8 +233,11 @@ jobs:
             }
           }
 
-          if (-not $nsisReady -or -not $bundleReady) {
-            New-PortableZipWithOfflineBundle
+          # Always produce our own validated portable zip, instead of relying on Tauri defaults.
+          New-PortableZipWithOfflineBundle
+
+          if (-not $nsisReady) {
+            Write-Output "::warning title=NSIS fallback::NSIS setup is unavailable or suspiciously small; validated portable zip artifact is still published."
           }
 
       - name: Build installers (Linux)
@@ -235,6 +301,20 @@ jobs:
 
       - name: Verify assets
         run: ls -R release-assets
+
+      - name: Validate Windows portable offline payload
+        run: |
+          ZIP_PATH="release-assets/openclaw-desktop-windows-portable.zip"
+          if [ ! -f "$ZIP_PATH" ]; then
+            echo "missing portable asset: $ZIP_PATH"
+            exit 1
+          fi
+          unzip -l "$ZIP_PATH" > release-assets/windows-portable-list.txt
+          grep -q "bundle/resources/openclaw-bundle/manifest.json" release-assets/windows-portable-list.txt
+          grep -q "bundle/resources/openclaw-bundle/openclaw.tgz" release-assets/windows-portable-list.txt
+          grep -q "bundle/resources/openclaw-bundle/node/node.exe" release-assets/windows-portable-list.txt
+          grep -q "bundle/resources/openclaw-bundle/npm/bin/npm-cli.js" release-assets/windows-portable-list.txt
+          grep -q "bundle/resources/openclaw-bundle/prefix/" release-assets/windows-portable-list.txt
 
       - name: Generate updater manifest
         run: |
