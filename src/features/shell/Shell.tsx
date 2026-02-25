@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { openclawBridge } from "../../bridge/openclawBridge";
 import type { BrowserModeStatus, BrowserRelayDiagnostic, BrowserRelayStatus } from "../../bridge/types";
-import feedbackGroupQr from "../../assets/feedback-group-qr.png";
+import feedbackGroupQr from "../../assets/wechat.jpg";
 
 type Props = {
   onStatus: (message: string) => void;
