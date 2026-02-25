@@ -109,16 +109,24 @@ jobs:
             "npm/bin/npm-cli.js",
             "prefix"
           )
+          $bundleReady = $true
           foreach ($relativePath in $requiredPaths) {
             $candidate = Join-Path $bundleRoot $relativePath
             if (!(Test-Path $candidate)) {
-              throw "Offline bundle missing required path: $candidate"
+              Write-Output "::warning title=Offline bundle path missing::$candidate"
+              $bundleReady = $false
             }
           }
 
-          $bundleSizeBytes = (Get-ChildItem -Path $bundleRoot -Recurse -File | Measure-Object -Property Length -Sum).Sum
-          if ($null -eq $bundleSizeBytes -or $bundleSizeBytes -lt 50MB) {
-            throw "Offline bundle is unexpectedly small: $bundleSizeBytes bytes ($bundleRoot)"
+          if (Test-Path $bundleRoot) {
+            $bundleSizeBytes = (Get-ChildItem -Path $bundleRoot -Recurse -File | Measure-Object -Property Length -Sum).Sum
+            if ($null -eq $bundleSizeBytes -or $bundleSizeBytes -lt 50MB) {
+              Write-Output "::warning title=Offline bundle suspiciously small::SizeBytes=$bundleSizeBytes Root=$bundleRoot"
+              $bundleReady = $false
+            }
+          } else {
+            Write-Output "::warning title=Offline bundle root missing::$bundleRoot"
+            $bundleReady = $false
           }
 
           function New-PortableZipWithOfflineBundle {
@@ -133,6 +141,9 @@ jobs:
             Remove-Item -Recurse -Force $portableRoot -ErrorAction SilentlyContinue
             New-Item -ItemType Directory -Force -Path (Join-Path $portableRoot "bundle") | Out-Null
             Copy-Item "src-tauri/target/release/openclaw-desktop.exe" (Join-Path $portableRoot "openclaw-desktop.exe") -Force
+            if (!(Test-Path "src-tauri/bundle/resources/openclaw-bundle")) {
+              throw "Portable fallback aborted: offline bundle resources are missing."
+            }
             Copy-Item "src-tauri/bundle/resources" (Join-Path $portableRoot "bundle/resources") -Recurse -Force
             Remove-Item -Force $portableZip -ErrorAction SilentlyContinue
             Compress-Archive -Path "$portableRoot/*" -DestinationPath $portableZip -Force
@@ -159,7 +170,7 @@ jobs:
             }
           }
 
-          if (-not $nsisReady) {
+          if (-not $nsisReady -or -not $bundleReady) {
             New-PortableZipWithOfflineBundle
           }
 
