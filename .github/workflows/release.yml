@@ -117,8 +117,7 @@ jobs:
               "openclaw.tgz",
               "node/node.exe",
               "npm/bin/npm-cli.js",
-              "npm-cache",
-              "prefix"
+              "npm-cache"
             )
             foreach ($relativePath in $requiredPaths) {
               $candidate = Join-Path $BundleRoot $relativePath
@@ -126,9 +125,13 @@ jobs:
                 throw "Offline bundle path missing: $candidate"
               }
             }
+            $prefixPath = Join-Path $BundleRoot "prefix"
+            if (!(Test-Path $prefixPath)) {
+              Write-Output "::warning title=Offline bundle prefix missing::$prefixPath"
+            }
 
             $bundleSizeBytes = (Get-ChildItem -Path $BundleRoot -Recurse -File | Measure-Object -Property Length -Sum).Sum
-            if ($null -eq $bundleSizeBytes -or $bundleSizeBytes -lt 100MB) {
+            if ($null -eq $bundleSizeBytes -or $bundleSizeBytes -lt 50MB) {
               throw "Offline bundle suspiciously small: SizeBytes=$bundleSizeBytes Root=$BundleRoot"
             }
           }
@@ -177,16 +180,20 @@ jobs:
                 "bundle/resources/openclaw-bundle/manifest.json",
                 "bundle/resources/openclaw-bundle/openclaw.tgz",
                 "bundle/resources/openclaw-bundle/node/node.exe",
-                "bundle/resources/openclaw-bundle/npm/bin/npm-cli.js"
+                "bundle/resources/openclaw-bundle/npm/bin/npm-cli.js",
+                "bundle/resources/openclaw-bundle/npm-cache/"
               )
               foreach ($required in $requiredEntries) {
-                if (-not ($entries -contains $required)) {
+                if (-not (($entries -contains $required) -or ($entries | Where-Object { $_ -like "$required*" }))) {
                   throw "Portable zip missing required entry: $required"
                 }
               }
-              $prefixEntries = $entries | Where-Object { $_ -like "bundle/resources/openclaw-bundle/prefix/*" }
-              if ($prefixEntries.Count -eq 0) {
-                throw "Portable zip missing prefix payload entries."
+              $payloadEntries = $entries | Where-Object {
+                $_ -like "bundle/resources/openclaw-bundle/prefix/*" -or
+                $_ -like "bundle/resources/openclaw-bundle/npm-cache/*"
+              }
+              if ($payloadEntries.Count -eq 0) {
+                throw "Portable zip missing offline payload entries (prefix/npm-cache)."
               }
             } finally {
               $zip.Dispose()
@@ -314,7 +321,11 @@ jobs:
           grep -q "bundle/resources/openclaw-bundle/openclaw.tgz" release-assets/windows-portable-list.txt
           grep -q "bundle/resources/openclaw-bundle/node/node.exe" release-assets/windows-portable-list.txt
           grep -q "bundle/resources/openclaw-bundle/npm/bin/npm-cli.js" release-assets/windows-portable-list.txt
-          grep -q "bundle/resources/openclaw-bundle/prefix/" release-assets/windows-portable-list.txt
+          if ! grep -q "bundle/resources/openclaw-bundle/prefix/" release-assets/windows-portable-list.txt && \
+             ! grep -q "bundle/resources/openclaw-bundle/npm-cache/" release-assets/windows-portable-list.txt; then
+            echo "portable zip missing offline payload entries (prefix/npm-cache)"
+            exit 1
+          fi
 
       - name: Generate updater manifest
         run: |

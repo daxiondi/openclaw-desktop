@@ -314,43 +314,55 @@ async function main() {
   const cacheDir = path.join(bundleDir, "npm-cache");
   const installPrefix = path.join(tempDir, "install-prefix");
   await fsp.mkdir(cacheDir, { recursive: true });
-  run("npm", [
-    "install",
-    "--prefix",
-    installPrefix,
-    bundledTgz,
-    "--cache",
-    cacheDir,
-    "--no-audit",
-    "--no-fund",
-    "--loglevel=error"
-  ]);
-
-  console.log("[bundle] snapshot installed prefix for fully-offline install...");
+  let prefixAvailable = false;
   const bundledPrefix = path.join(bundleDir, "prefix");
   await fsp.rm(bundledPrefix, { recursive: true, force: true });
-  // npm local install 会产生指向临时目录的绝对软链；这里解引用，避免打包后出现失效链接。
-  await fsp.cp(installPrefix, bundledPrefix, { recursive: true, dereference: true });
 
-  if (process.env.OPENCLAW_BUNDLE_SKIP_VERIFY === "1") {
-    console.log("[bundle] skip prefix verification because OPENCLAW_BUNDLE_SKIP_VERIFY=1");
-  } else {
-    console.log("[bundle] verifying bundled prefix snapshot...");
-    const verifyPrefix = path.join(tempDir, "verify-prefix");
-    await fsp.cp(bundledPrefix, verifyPrefix, { recursive: true });
-    const verifyOpenclaw = resolveInstalledOpenclaw(verifyPrefix);
-    const verifyEnv = {
-      ...process.env,
-      PATH: `${path.dirname(nodeTarget)}${path.delimiter}${process.env.PATH || ""}`
-    };
-    if (process.platform === "win32") {
-      run("cmd", ["/C", verifyOpenclaw, "--version"], { env: verifyEnv });
+  try {
+    run("npm", [
+      "install",
+      "--prefix",
+      installPrefix,
+      bundledTgz,
+      "--cache",
+      cacheDir,
+      "--no-audit",
+      "--no-fund",
+      "--loglevel=error"
+    ]);
+
+    console.log("[bundle] snapshot installed prefix for fully-offline install...");
+    // npm local install 会产生指向临时目录的绝对软链；这里解引用，避免打包后出现失效链接。
+    await fsp.cp(installPrefix, bundledPrefix, { recursive: true, dereference: true });
+
+    if (process.env.OPENCLAW_BUNDLE_SKIP_VERIFY === "1") {
+      console.log("[bundle] skip prefix verification because OPENCLAW_BUNDLE_SKIP_VERIFY=1");
     } else {
-      run(verifyOpenclaw, ["--version"], { env: verifyEnv });
+      console.log("[bundle] verifying bundled prefix snapshot...");
+      const verifyPrefix = path.join(tempDir, "verify-prefix");
+      await fsp.cp(bundledPrefix, verifyPrefix, { recursive: true });
+      const verifyOpenclaw = resolveInstalledOpenclaw(verifyPrefix);
+      const verifyEnv = {
+        ...process.env,
+        PATH: `${path.dirname(nodeTarget)}${path.delimiter}${process.env.PATH || ""}`
+      };
+      if (process.platform === "win32") {
+        run("cmd", ["/C", verifyOpenclaw, "--version"], { env: verifyEnv });
+      } else {
+        run(verifyOpenclaw, ["--version"], { env: verifyEnv });
+      }
+      await fsp.rm(verifyPrefix, { recursive: true, force: true });
     }
-    await fsp.rm(verifyPrefix, { recursive: true, force: true });
+    prefixAvailable = true;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(`[bundle] WARN: prefix snapshot failed, fallback to npm-cache mode: ${message}`);
+    await fsp.rm(bundledPrefix, { recursive: true, force: true });
+    // 仍然确保 tgz 被写入离线 cache；运行时可通过 npm-cli + cache + tgz 完成离线安装。
+    run("npm", ["cache", "add", bundledTgz, "--cache", cacheDir, "--loglevel=error"]);
+  } finally {
+    await fsp.rm(installPrefix, { recursive: true, force: true });
   }
-  await fsp.rm(installPrefix, { recursive: true, force: true });
 
   const npmCli = path.join(bundleDir, "npm", "bin", "npm-cli.js");
   const manifest = {
@@ -361,11 +373,13 @@ async function main() {
     nodeVersion: runtime.nodeVersion,
     nodeSource: runtime.nodeSource,
     nodePlatform: `${process.platform}-${process.arch}`,
+    prefixAvailable,
     files: {
       openclawTgz: "openclaw.tgz",
       npmCache: "npm-cache",
       node: path.relative(bundleDir, nodeTarget),
-      npmCli: path.relative(bundleDir, npmCli)
+      npmCli: path.relative(bundleDir, npmCli),
+      prefix: prefixAvailable ? "prefix" : null
     }
   };
   await fsp.writeFile(
