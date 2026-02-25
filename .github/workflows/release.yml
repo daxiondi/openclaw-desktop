@@ -101,22 +101,66 @@ jobs:
         shell: pwsh
         run: |
           npm run prepare:openclaw-bundle
-          $nsisLog = "windows-nsis-build.log"
-          npx tauri build --bundles nsis *>&1 | Tee-Object -FilePath $nsisLog
-          if ($LASTEXITCODE -ne 0) {
-            $tail = (Get-Content $nsisLog -Tail 120) -join "`n"
-            $escaped = $tail.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
-            Write-Output "::warning title=NSIS build failed; fallback to portable zip::$escaped"
+          $bundleRoot = "src-tauri/bundle/resources/openclaw-bundle"
+          $requiredPaths = @(
+            "manifest.json",
+            "openclaw.tgz",
+            "node/node.exe",
+            "npm/bin/npm-cli.js",
+            "prefix"
+          )
+          foreach ($relativePath in $requiredPaths) {
+            $candidate = Join-Path $bundleRoot $relativePath
+            if (!(Test-Path $candidate)) {
+              throw "Offline bundle missing required path: $candidate"
+            }
+          }
 
+          $bundleSizeBytes = (Get-ChildItem -Path $bundleRoot -Recurse -File | Measure-Object -Property Length -Sum).Sum
+          if ($null -eq $bundleSizeBytes -or $bundleSizeBytes -lt 50MB) {
+            throw "Offline bundle is unexpectedly small: $bundleSizeBytes bytes ($bundleRoot)"
+          }
+
+          function New-PortableZipWithOfflineBundle {
             npx tauri build --no-bundle
             if ($LASTEXITCODE -ne 0) {
               throw "Windows no-bundle build failed."
             }
 
             $portableDir = "src-tauri/target/release/bundle/portable"
-            New-Item -ItemType Directory -Force -Path $portableDir | Out-Null
-            Copy-Item "src-tauri/target/release/openclaw-desktop.exe" "$portableDir/openclaw-desktop.exe" -Force
-            Compress-Archive -Path "$portableDir/openclaw-desktop.exe" -DestinationPath "$portableDir/openclaw-desktop-windows-portable.zip" -Force
+            $portableRoot = Join-Path $portableDir "openclaw-desktop-windows-portable"
+            $portableZip = Join-Path $portableDir "openclaw-desktop-windows-portable.zip"
+            Remove-Item -Recurse -Force $portableRoot -ErrorAction SilentlyContinue
+            New-Item -ItemType Directory -Force -Path (Join-Path $portableRoot "bundle") | Out-Null
+            Copy-Item "src-tauri/target/release/openclaw-desktop.exe" (Join-Path $portableRoot "openclaw-desktop.exe") -Force
+            Copy-Item "src-tauri/bundle/resources" (Join-Path $portableRoot "bundle/resources") -Recurse -Force
+            Remove-Item -Force $portableZip -ErrorAction SilentlyContinue
+            Compress-Archive -Path "$portableRoot/*" -DestinationPath $portableZip -Force
+          }
+
+          $nsisLog = "windows-nsis-build.log"
+          $nsisReady = $true
+          npx tauri build --bundles nsis *>&1 | Tee-Object -FilePath $nsisLog
+          if ($LASTEXITCODE -ne 0) {
+            $tail = (Get-Content $nsisLog -Tail 120) -join "`n"
+            $escaped = $tail.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+            Write-Output "::warning title=NSIS build failed; fallback to portable zip::$escaped"
+            $nsisReady = $false
+          }
+
+          if ($nsisReady) {
+            $setupExe = Get-ChildItem "src-tauri/target/release/bundle/nsis" -Filter "*-setup.exe" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+            if ($null -eq $setupExe) {
+              Write-Output "::warning title=NSIS artifact missing; fallback to portable zip::No Windows setup artifact found in bundle/nsis"
+              $nsisReady = $false
+            } elseif ($setupExe.Length -lt 50MB) {
+              Write-Output "::warning title=NSIS artifact suspiciously small; fallback to portable zip::File=$($setupExe.Name), SizeBytes=$($setupExe.Length)"
+              $nsisReady = $false
+            }
+          }
+
+          if (-not $nsisReady) {
+            New-PortableZipWithOfflineBundle
           }
 
       - name: Build installers (Linux)

@@ -1868,6 +1868,8 @@ fn resolve_bundled_openclaw_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
 
     if let Ok(exe) = std::env::current_exe() {
         if let Some(exe_dir) = exe.parent() {
+            candidates.push(exe_dir.join("bundle").join("resources").join("openclaw-bundle"));
+            candidates.push(exe_dir.join("resources").join("openclaw-bundle"));
             candidates.push(
                 exe_dir
                     .join("..")

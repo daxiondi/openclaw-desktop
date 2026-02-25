@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "openclaw-desktop",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "identifier": "com.openclaw.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -25,12 +25,22 @@
   "bundle": {
     "active": true,
     "createUpdaterArtifacts": true,
-    "targets": ["appimage", "deb", "dmg", "msi", "rpm"],
-    "resources": ["bundle/resources/**/*"]
+    "targets": [
+      "appimage",
+      "deb",
+      "dmg",
+      "msi",
+      "rpm"
+    ],
+    "resources": [
+      "bundle/resources/**/*"
+    ]
   },
   "plugins": {
     "updater": {
-      "endpoints": ["https://github.com/daxiondi/openclaw-desktop/releases/latest/download/latest.json"],
+      "endpoints": [
+        "https://github.com/daxiondi/openclaw-desktop/releases/latest/download/latest.json"
+      ],
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDgzMjgzNUE0RUQ2QTk5OEYKUldTUG1XcnRwRFVvZzNZV2ZGTVNEZzdJb0puOXRndzl2dGF1NjMyRlM3dTh0dUlwNlJzaDZEM2kK",
       "windows": {
         "installMode": "passive"
