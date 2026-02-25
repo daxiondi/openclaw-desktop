@@ -23,6 +23,12 @@
    - 本地 Ollama
 4. 登录完成后即可进入聊天和模型配置。
 
+## 沟通交流群
+
+扫码加入 `openclaw` 交流群：
+
+![openclaw交流群二维码](./src/assets/feedback-group-qr.png)
+
 ## 在线更新（自动检测 + 一键更新）
 
 应用顶部已内置在线更新入口：

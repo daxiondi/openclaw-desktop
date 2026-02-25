@@ -24,6 +24,12 @@ The goal is simple: install once, use immediately.
    - Local Ollama
 4. Start chatting and configuring models.
 
+## Community Group
+
+Scan the QR code to join the `openclaw` community chat group:
+
+![openclaw community group QR code](./src/assets/feedback-group-qr.png)
+
 ## In-App Updates (auto-detect + one click)
 
 The app now includes a built-in updater control in the header:
