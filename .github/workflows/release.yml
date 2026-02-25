@@ -201,19 +201,22 @@ jobs:
           }
 
           function New-PortableZipWithOfflineBundle {
-            npx tauri build --no-bundle
-            Assert-StepSuccess "Windows no-bundle build"
-
             $portableDir = "src-tauri/target/release/bundle/portable"
             $portableRoot = Join-Path $portableDir "openclaw-desktop-windows-portable"
             $portableZip = Join-Path $portableDir "openclaw-desktop-windows-portable.zip"
+            $builtExe = "src-tauri/target/release/openclaw-desktop.exe"
+            if (!(Test-Path $builtExe)) {
+              throw "Windows executable not found: $builtExe"
+            }
+
             Remove-Item -Recurse -Force $portableRoot -ErrorAction SilentlyContinue
             New-Item -ItemType Directory -Force -Path (Join-Path $portableRoot "bundle/resources") | Out-Null
-            Copy-Item "src-tauri/target/release/openclaw-desktop.exe" (Join-Path $portableRoot "openclaw-desktop.exe") -Force
+            Copy-Item $builtExe (Join-Path $portableRoot "openclaw-desktop.exe") -Force
             Copy-DirectoryRobust -Source "src-tauri/bundle/resources" -Destination (Join-Path $portableRoot "bundle/resources")
             Assert-OfflineBundleReady -BundleRoot (Join-Path $portableRoot "bundle/resources/openclaw-bundle")
             Remove-Item -Force $portableZip -ErrorAction SilentlyContinue
-            Compress-Archive -Path "$portableRoot/*" -DestinationPath $portableZip -Force
+            tar.exe -a -c -f $portableZip -C $portableRoot .
+            Assert-StepSuccess "tar portable zip"
             Assert-ZipContainsOfflineBundle -ZipPath $portableZip
           }
 
