@@ -2124,6 +2124,11 @@ fn windows_robocopy_path_arg(path: &PathBuf) -> String {
     }
 }
 
+#[cfg(not(target_os = "windows"))]
+fn windows_robocopy_path_arg(path: &PathBuf) -> String {
+    path.to_string_lossy().to_string()
+}
+
 fn remove_dir_all_native(dir: &PathBuf) -> Result<(), String> {
     if !dir.exists() {
         return Ok(());
