@@ -2102,10 +2102,26 @@ fn resolve_bundled_openclaw_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
 
     for candidate in candidates {
         if candidate.exists() {
-            return Some(candidate.canonicalize().unwrap_or(candidate));
+            // Avoid canonicalize() on Windows because it may return a verbatim path (\\?\C:\...),
+            // and some native tools (e.g. robocopy) interpret that as a UNC path and fail.
+            return Some(candidate);
         }
     }
     None
+}
+
+#[cfg(target_os = "windows")]
+fn windows_robocopy_path_arg(path: &PathBuf) -> String {
+    // robocopy treats \\?\C:\... as a UNC/network path and fails with ERROR 53.
+    // Strip the verbatim prefix for compatibility.
+    let raw = path.to_string_lossy();
+    if let Some(rest) = raw.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{}", rest)
+    } else if let Some(rest) = raw.strip_prefix(r"\\?\") {
+        rest.to_string()
+    } else {
+        raw.to_string()
+    }
 }
 
 fn remove_dir_all_native(dir: &PathBuf) -> Result<(), String> {
@@ -2148,9 +2164,12 @@ fn copy_dir_with_native_tool(src: &PathBuf, dst: &PathBuf) -> Result<(), String>
     }
 
     if cfg!(target_os = "windows") {
-        let output = Command::new("robocopy")
-            .arg(src)
-            .arg(dst)
+        // Ensure destination exists: Copy-Item would create it, and robocopy behaves better when it exists.
+        fs::create_dir_all(dst).map_err(|err| err.to_string())?;
+
+        let robocopy_output = Command::new("robocopy")
+            .arg(windows_robocopy_path_arg(src))
+            .arg(windows_robocopy_path_arg(dst))
             .args([
                 "/E",
                 "/R:2",
@@ -2163,38 +2182,45 @@ fn copy_dir_with_native_tool(src: &PathBuf, dst: &PathBuf) -> Result<(), String>
             ])
             .output();
 
-        match output {
+        let mut robocopy_error: Option<String> = None;
+        match robocopy_output {
             Ok(output) => {
                 let exit_code = output.status.code().unwrap_or(16);
                 if exit_code < 8 {
                     return Ok(());
                 }
-                return Err(format!(
+                robocopy_error = Some(format!(
                     "robocopy failed with exit code {}: {}",
                     exit_code,
                     summarize_output(&output.stdout, &output.stderr)
                 ));
             }
-            Err(_) => {
-                let src_escaped = src.to_string_lossy().replace('\'', "''");
-                let dst_escaped = dst.to_string_lossy().replace('\'', "''");
-                let script = format!(
-                    "$ErrorActionPreference='Stop'; Copy-Item -LiteralPath '{}' -Destination '{}' -Recurse -Force",
-                    src_escaped, dst_escaped
-                );
-                let output = Command::new("powershell")
-                    .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &script])
-                    .output()
-                    .map_err(|err| err.to_string())?;
-                if output.status.success() {
-                    return Ok(());
-                }
-                return Err(format!(
-                    "Copy-Item failed: {}",
-                    summarize_output(&output.stdout, &output.stderr)
-                ));
+            Err(err) => {
+                robocopy_error = Some(format!("robocopy spawn failed: {}", err));
             }
         }
+
+        // Fallback to PowerShell Copy-Item. This is slower and may be less tolerant for long paths,
+        // but it avoids certain robocopy incompatibilities (e.g. verbatim paths).
+        let src_escaped = src.to_string_lossy().replace('\'', "''");
+        let dst_escaped = dst.to_string_lossy().replace('\'', "''");
+        let script = format!(
+            "$ErrorActionPreference='Stop'; Copy-Item -LiteralPath '{}' -Destination '{}' -Recurse -Force",
+            src_escaped, dst_escaped
+        );
+        let output = Command::new("powershell")
+            .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &script])
+            .output()
+            .map_err(|err| err.to_string())?;
+        if output.status.success() {
+            return Ok(());
+        }
+        let detail = summarize_output(&output.stdout, &output.stderr);
+        return Err(format!(
+            "{} | Copy-Item failed: {}",
+            robocopy_error.unwrap_or_else(|| "robocopy failed (unknown)".to_string()),
+            if detail.is_empty() { "no output".to_string() } else { detail }
+        ));
     }
 
     let output = Command::new("cp")
@@ -2635,13 +2661,15 @@ fn try_prepare_windows_downloaded_bundle(
         }
     }
     let _ = remove_dir_all_native(&extract_root);
-    let canonical = target_bundle.canonicalize().unwrap_or(target_bundle);
     push_bootstrap_log(
         app,
         logs,
-        format!("Offline payload downloaded to {}", canonical.to_string_lossy()),
+        format!(
+            "Offline payload downloaded to {}",
+            target_bundle.to_string_lossy()
+        ),
     );
-    Ok(Some(canonical))
+    Ok(Some(target_bundle))
 }
 
 fn try_prepare_windows_bundle_from_selected_zip(
@@ -2705,13 +2733,15 @@ fn try_prepare_windows_bundle_from_selected_zip(
         }
     }
     let _ = remove_dir_all_native(&extract_root);
-    let canonical = target_bundle.canonicalize().unwrap_or(target_bundle);
     push_bootstrap_log(
         app,
         logs,
-        format!("Selected offline payload extracted to {}", canonical.to_string_lossy()),
+        format!(
+            "Selected offline payload extracted to {}",
+            target_bundle.to_string_lossy()
+        ),
     );
-    Ok(Some(canonical))
+    Ok(Some(target_bundle))
 }
 
 fn install_openclaw_from_bundle_dir(
