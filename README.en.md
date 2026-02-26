@@ -44,6 +44,18 @@ Why Windows can still fail to include payload inside setup:
 - In the Windows packaging pipeline, resource embedding can be unstable (symptom: `openclaw-bundle` missing in installer output).
 - To keep users unblocked, runtime auto-download fallback and manual portable selection are both supported, with no extra CLI setup required.
 
+### Verify Windows portable install (dev/CI)
+
+This script validates that the Windows portable zip can bootstrap OpenClaw offline:
+download/extract payload → offline install → start gateway → verify local page reachable.
+
+```bash
+npm run test:windows-portable
+
+# verify a local zip you already downloaded
+npm run test:windows-portable -- C:\\path\\to\\openclaw-desktop-windows-portable.zip
+```
+
 ## Community Group
 
 Scan the QR code to join the `openclaw` community chat group:

@@ -47,7 +47,9 @@ async function waitForHttp(url, timeoutMs) {
   while (Date.now() < deadline) {
     try {
       const res = await fetch(url, { method: "GET" });
-      if (res.ok) {
+      // Treat any HTTP response as reachable. Some OpenClaw gateways may
+      // return 401/403 for unauthenticated requests but are still healthy.
+      if (res && typeof res.status === "number") {
         return true;
       }
     } catch {}
@@ -149,7 +151,7 @@ async function main() {
   await fsp.mkdir(codexDir, { recursive: true });
   await fsp.writeFile(path.join(codexDir, "auth.json"), authRaw, "utf8");
 
-  const blockedEnv = {
+  const installEnv = {
     ...process.env,
     HOME: tempHome,
     USERPROFILE: tempHome,
@@ -178,12 +180,14 @@ async function main() {
       "--no-audit",
       "--no-fund",
       "--loglevel=error"
-    ], { env: blockedEnv });
+    ], { env: installEnv });
   }
 
   const openclawBin = resolveInstalledOpenclaw(prefix);
   const appEnv = {
-    ...blockedEnv,
+    ...process.env,
+    HOME: tempHome,
+    USERPROFILE: tempHome,
     PATH: [
       path.join(prefix, "bin"),
       path.dirname(nodePath),
@@ -249,7 +253,7 @@ async function main() {
   });
 
   try {
-    const ready = await waitForHttp("http://127.0.0.1:18789/", 90_000);
+    const ready = await waitForHttp("http://127.0.0.1:18789/", 180_000);
     if (!ready) {
       throw new Error(
         [

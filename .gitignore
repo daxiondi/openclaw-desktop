@@ -5,3 +5,5 @@ dist
 src-tauri/target
 src-tauri/bundle/resources/openclaw-bundle
 .tmp/
+.tmp-*/
+.tmp-*

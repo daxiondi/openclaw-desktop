@@ -1,6 +1,6 @@
 {
   "name": "openclaw-desktop",
-  "version": "0.1.26",
+  "version": "0.1.27",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,6 +10,7 @@
     "prepare:openclaw-bundle": "node scripts/prepare-openclaw-bundle.mjs",
     "generate:updater-manifest": "node scripts/generate-updater-manifest.mjs",
     "test:offline-local-codex-ui": "node scripts/test-offline-local-codex-ui.mjs",
+    "test:windows-portable": "node scripts/test-windows-portable-install.mjs",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "npm run prepare:openclaw-bundle && tauri build"

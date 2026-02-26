@@ -2108,32 +2108,93 @@ fn resolve_bundled_openclaw_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
     None
 }
 
+fn remove_dir_all_native(dir: &PathBuf) -> Result<(), String> {
+    if !dir.exists() {
+        return Ok(());
+    }
+
+    match fs::remove_dir_all(dir) {
+        Ok(_) => Ok(()),
+        Err(error) => {
+            if !cfg!(target_os = "windows") {
+                return Err(error.to_string());
+            }
+
+            let output = Command::new("cmd")
+                .args(["/C", "rmdir", "/S", "/Q"])
+                .arg(dir)
+                .output()
+                .map_err(|err| format!("Failed to run rmdir fallback: {}", err))?;
+            if output.status.success() {
+                Ok(())
+            } else {
+                let detail = summarize_output(&output.stdout, &output.stderr);
+                Err(if detail.is_empty() {
+                    error.to_string()
+                } else {
+                    format!("{} | rmdir fallback failed: {}", error, detail)
+                })
+            }
+        }
+    }
+}
+
 fn copy_dir_with_native_tool(src: &PathBuf, dst: &PathBuf) -> Result<(), String> {
     if dst.exists() {
-        fs::remove_dir_all(dst).map_err(|err| err.to_string())?;
+        remove_dir_all_native(dst)?;
     }
     if let Some(parent) = dst.parent() {
         fs::create_dir_all(parent).map_err(|err| err.to_string())?;
     }
 
     if cfg!(target_os = "windows") {
-        let src_escaped = src.to_string_lossy().replace('\'', "''");
-        let dst_escaped = dst.to_string_lossy().replace('\'', "''");
-        let script = format!(
-            "Copy-Item -LiteralPath '{}' -Destination '{}' -Recurse -Force",
-            src_escaped, dst_escaped
-        );
-        let output = Command::new("powershell")
-            .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &script])
-            .output()
-            .map_err(|err| err.to_string())?;
-        if output.status.success() {
-            return Ok(());
+        let output = Command::new("robocopy")
+            .arg(src)
+            .arg(dst)
+            .args([
+                "/E",
+                "/R:2",
+                "/W:2",
+                "/NFL",
+                "/NDL",
+                "/NJH",
+                "/NJS",
+                "/NP",
+            ])
+            .output();
+
+        match output {
+            Ok(output) => {
+                let exit_code = output.status.code().unwrap_or(16);
+                if exit_code < 8 {
+                    return Ok(());
+                }
+                return Err(format!(
+                    "robocopy failed with exit code {}: {}",
+                    exit_code,
+                    summarize_output(&output.stdout, &output.stderr)
+                ));
+            }
+            Err(_) => {
+                let src_escaped = src.to_string_lossy().replace('\'', "''");
+                let dst_escaped = dst.to_string_lossy().replace('\'', "''");
+                let script = format!(
+                    "$ErrorActionPreference='Stop'; Copy-Item -LiteralPath '{}' -Destination '{}' -Recurse -Force",
+                    src_escaped, dst_escaped
+                );
+                let output = Command::new("powershell")
+                    .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &script])
+                    .output()
+                    .map_err(|err| err.to_string())?;
+                if output.status.success() {
+                    return Ok(());
+                }
+                return Err(format!(
+                    "Copy-Item failed: {}",
+                    summarize_output(&output.stdout, &output.stderr)
+                ));
+            }
         }
-        return Err(format!(
-            "Copy-Item failed: {}",
-            summarize_output(&output.stdout, &output.stderr)
-        ));
     }
 
     let output = Command::new("cp")
@@ -2349,6 +2410,166 @@ fn find_openclaw_bundle_dir(root: &PathBuf) -> Option<PathBuf> {
     None
 }
 
+fn resolve_openclaw_bundle_dir_from_extracted_root(extract_root: &PathBuf) -> Option<PathBuf> {
+    let common_path = extract_root
+        .join("bundle")
+        .join("resources")
+        .join("openclaw-bundle");
+    if common_path.exists() {
+        return Some(common_path);
+    }
+    find_openclaw_bundle_dir(extract_root)
+}
+
+fn download_url_to_file_native(url: &str, out_file: &PathBuf) -> Result<(), String> {
+    if let Some(parent) = out_file.parent() {
+        fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+    }
+
+    let temp_file = out_file.with_extension("download");
+    let _ = fs::remove_file(&temp_file);
+
+    let curl = Command::new("curl")
+        .args([
+            "-L",
+            "--fail",
+            "--retry",
+            "3",
+            "--retry-all-errors",
+            "--connect-timeout",
+            "30",
+            "-o",
+        ])
+        .arg(&temp_file)
+        .arg(url)
+        .output();
+
+    let mut curl_error: Option<String> = None;
+    match curl {
+        Ok(output) => {
+            if output.status.success() {
+                let _ = fs::remove_file(out_file);
+                fs::rename(&temp_file, out_file).map_err(|err| err.to_string())?;
+                return Ok(());
+            }
+            let detail = summarize_output(&output.stdout, &output.stderr);
+            curl_error = Some(if detail.is_empty() {
+                "curl failed with no output".to_string()
+            } else {
+                format!("curl failed: {}", detail)
+            });
+        }
+        Err(error) => {
+            curl_error = Some(format!("curl unavailable: {}", error));
+        }
+    }
+
+    let url_escaped = url.replace('\'', "''");
+    let out_escaped = temp_file.to_string_lossy().replace('\'', "''");
+    let script = format!(
+        "$ErrorActionPreference='Stop'; \
+         [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; \
+         $cmd = Get-Command Invoke-WebRequest -ErrorAction Stop; \
+         $hasBasic = $cmd.Parameters.ContainsKey('UseBasicParsing'); \
+         if ($hasBasic) {{ Invoke-WebRequest -UseBasicParsing -Uri '{url}' -OutFile '{out}'; }} \
+         else {{ Invoke-WebRequest -Uri '{url}' -OutFile '{out}'; }}",
+        url = url_escaped,
+        out = out_escaped
+    );
+
+    let output = Command::new("powershell")
+        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &script])
+        .output()
+        .map_err(|err| format!("Failed to run download script: {}", err))?;
+
+    if output.status.success() {
+        let _ = fs::remove_file(out_file);
+        fs::rename(&temp_file, out_file).map_err(|err| err.to_string())?;
+        return Ok(());
+    }
+
+    let ps_detail = summarize_output(&output.stdout, &output.stderr);
+    let ps_error = if ps_detail.is_empty() {
+        "powershell download failed with no output".to_string()
+    } else {
+        format!("powershell download failed: {}", ps_detail)
+    };
+
+    Err(
+        [
+            "Download failed.".to_string(),
+            curl_error.unwrap_or_else(|| "curl failed (unknown)".to_string()),
+            ps_error,
+        ]
+        .join(" "),
+    )
+}
+
+fn extract_zip_to_dir_native(zip_path: &PathBuf, extract_root: &PathBuf) -> Result<(), String> {
+    if extract_root.exists() {
+        remove_dir_all_native(extract_root)?;
+    }
+    fs::create_dir_all(extract_root).map_err(|err| err.to_string())?;
+
+    let tar = Command::new("tar")
+        .arg("-xf")
+        .arg(zip_path)
+        .arg("-C")
+        .arg(extract_root)
+        .output();
+
+    let mut tar_error: Option<String> = None;
+    match tar {
+        Ok(output) => {
+            if output.status.success() {
+                return Ok(());
+            }
+            let detail = summarize_output(&output.stdout, &output.stderr);
+            tar_error = Some(if detail.is_empty() {
+                "tar failed with no output".to_string()
+            } else {
+                format!("tar failed: {}", detail)
+            });
+        }
+        Err(error) => {
+            tar_error = Some(format!("tar unavailable: {}", error));
+        }
+    }
+
+    let zip_escaped = zip_path.to_string_lossy().replace('\'', "''");
+    let extract_escaped = extract_root.to_string_lossy().replace('\'', "''");
+    let script = format!(
+        "$ErrorActionPreference='Stop'; Expand-Archive -LiteralPath '{zip}' -DestinationPath '{extract}';",
+        zip = zip_escaped,
+        extract = extract_escaped
+    );
+
+    let output = Command::new("powershell")
+        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &script])
+        .output()
+        .map_err(|err| format!("Failed to run zip extract script: {}", err))?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let ps_detail = summarize_output(&output.stdout, &output.stderr);
+    let ps_error = if ps_detail.is_empty() {
+        "Expand-Archive failed with no output".to_string()
+    } else {
+        format!("Expand-Archive failed: {}", ps_detail)
+    };
+
+    Err(
+        [
+            "Zip extraction failed.".to_string(),
+            tar_error.unwrap_or_else(|| "tar failed (unknown)".to_string()),
+            ps_error,
+        ]
+        .join(" "),
+    )
+}
+
 fn try_prepare_windows_downloaded_bundle(
     app: &tauri::AppHandle,
     logs: &mut Vec<String>,
@@ -2373,40 +2594,29 @@ fn try_prepare_windows_downloaded_bundle(
         ),
     );
 
-    let zip_escaped = zip_path.to_string_lossy().replace('\'', "''");
-    let extract_escaped = extract_root.to_string_lossy().replace('\'', "''");
-    let url_escaped = OPENCLAW_WINDOWS_PORTABLE_BUNDLE_URL.replace('\'', "''");
-    let download_script = format!(
-        "$ErrorActionPreference='Stop'; \
-         [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; \
-         if (Test-Path '{extract}') {{ Remove-Item -LiteralPath '{extract}' -Recurse -Force; }}; \
-         New-Item -ItemType Directory -Path '{extract}' -Force | Out-Null; \
-         Invoke-WebRequest -UseBasicParsing -Uri '{url}' -OutFile '{zip}'; \
-         Expand-Archive -LiteralPath '{zip}' -DestinationPath '{extract}' -Force;",
-        extract = extract_escaped,
-        url = url_escaped,
-        zip = zip_escaped,
-    );
-
-    let output = Command::new("powershell")
-        .args([
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            &download_script,
-        ])
-        .output()
-        .map_err(|err| format!("Failed to run portable bundle download script: {}", err))?;
-    if !output.status.success() {
-        let detail = summarize_output(&output.stdout, &output.stderr);
-        if detail.is_empty() {
-            return Ok(None);
-        }
-        return Err(format!("Portable bundle download failed: {}", detail));
+    if !zip_path.exists() {
+        download_url_to_file_native(OPENCLAW_WINDOWS_PORTABLE_BUNDLE_URL, &zip_path).map_err(
+            |err| format!("Portable bundle download failed: {}", err),
+        )?;
+    } else {
+        push_bootstrap_log(
+            app,
+            logs,
+            format!("Using cached portable bundle: {}", zip_path.to_string_lossy()),
+        );
     }
 
-    let Some(found_bundle) = find_openclaw_bundle_dir(&extract_root) else {
+    if let Err(error) = extract_zip_to_dir_native(&zip_path, &extract_root) {
+        push_bootstrap_log(app, logs, format!("WARN: {}", error));
+        let _ = fs::remove_file(&zip_path);
+        download_url_to_file_native(OPENCLAW_WINDOWS_PORTABLE_BUNDLE_URL, &zip_path).map_err(
+            |err| format!("Portable bundle download failed: {}", err),
+        )?;
+        extract_zip_to_dir_native(&zip_path, &extract_root)
+            .map_err(|err| format!("Portable bundle extraction failed: {}", err))?;
+    }
+
+    let Some(found_bundle) = resolve_openclaw_bundle_dir_from_extracted_root(&extract_root) else {
         push_bootstrap_log(
             app,
             logs,
@@ -2415,7 +2625,16 @@ fn try_prepare_windows_downloaded_bundle(
         return Ok(None);
     };
 
-    copy_dir_with_native_tool(&found_bundle, &target_bundle)?;
+    if target_bundle.exists() {
+        remove_dir_all_native(&target_bundle)?;
+    }
+    match fs::rename(&found_bundle, &target_bundle) {
+        Ok(_) => {}
+        Err(_) => {
+            copy_dir_with_native_tool(&found_bundle, &target_bundle)?;
+        }
+    }
+    let _ = remove_dir_all_native(&extract_root);
     let canonical = target_bundle.canonicalize().unwrap_or(target_bundle);
     push_bootstrap_log(
         app,
@@ -2446,8 +2665,6 @@ fn try_prepare_windows_bundle_from_selected_zip(
 
     let extract_root = cache_root.join("portable-extract-manual");
     let target_bundle = cache_root.join("openclaw-bundle");
-    let zip_escaped = selected_zip.to_string_lossy().replace('\'', "''");
-    let extract_escaped = extract_root.to_string_lossy().replace('\'', "''");
 
     push_bootstrap_log(
         app,
@@ -2458,34 +2675,18 @@ fn try_prepare_windows_bundle_from_selected_zip(
         ),
     );
 
-    let extract_script = format!(
-        "$ErrorActionPreference='Stop'; \
-         if (Test-Path '{extract}') {{ Remove-Item -LiteralPath '{extract}' -Recurse -Force; }}; \
-         New-Item -ItemType Directory -Path '{extract}' -Force | Out-Null; \
-         Expand-Archive -LiteralPath '{zip}' -DestinationPath '{extract}' -Force;",
-        extract = extract_escaped,
-        zip = zip_escaped,
-    );
-
-    let output = Command::new("powershell")
-        .args([
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            &extract_script,
-        ])
-        .output()
-        .map_err(|err| format!("Failed to extract selected portable bundle: {}", err))?;
-    if !output.status.success() {
-        let detail = summarize_output(&output.stdout, &output.stderr);
-        if detail.is_empty() {
-            return Err("Selected portable bundle extraction failed.".to_string());
+    let extract_error = match extract_zip_to_dir_native(selected_zip, &extract_root) {
+        Ok(_) => None,
+        Err(error) => {
+            push_bootstrap_log(app, logs, format!("WARN: {}", error));
+            Some(error)
         }
-        return Err(format!("Selected portable bundle extraction failed: {}", detail));
-    }
+    };
 
-    let Some(found_bundle) = find_openclaw_bundle_dir(&extract_root) else {
+    let Some(found_bundle) = resolve_openclaw_bundle_dir_from_extracted_root(&extract_root) else {
+        if let Some(error) = extract_error {
+            return Err(format!("Selected portable bundle extraction failed: {}", error));
+        }
         push_bootstrap_log(
             app,
             logs,
@@ -2494,7 +2695,16 @@ fn try_prepare_windows_bundle_from_selected_zip(
         return Ok(None);
     };
 
-    copy_dir_with_native_tool(&found_bundle, &target_bundle)?;
+    if target_bundle.exists() {
+        remove_dir_all_native(&target_bundle)?;
+    }
+    match fs::rename(&found_bundle, &target_bundle) {
+        Ok(_) => {}
+        Err(_) => {
+            copy_dir_with_native_tool(&found_bundle, &target_bundle)?;
+        }
+    }
+    let _ = remove_dir_all_native(&extract_root);
     let canonical = target_bundle.canonicalize().unwrap_or(target_bundle);
     push_bootstrap_log(
         app,

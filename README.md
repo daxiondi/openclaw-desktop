@@ -43,6 +43,17 @@
 - Windows 的打包链路里，资源注入偶发失败/路径不稳定（表现为构建产物里缺少 `openclaw-bundle`）。
 - 为避免用户被阻塞，我们增加了运行时自动下载兜底 + 手动选择 portable 兜底，两条路径都不要求用户手动配环境。
 
+### 验证 Windows portable 安装（dev/CI）
+
+该脚本用于验证 Windows portable zip 是否能完成离线自举：下载/解压载荷 → 离线安装 → 启动 gateway → 验证本地页面可访问。
+
+```bash
+npm run test:windows-portable
+
+# 验证你已经下载好的 zip
+npm run test:windows-portable -- C:\\path\\to\\openclaw-desktop-windows-portable.zip
+```
+
 ## 沟通交流群
 
 扫码加入 `openclaw` 交流群：

@@ -309,6 +309,9 @@ jobs:
           # Always produce our own validated portable zip, instead of relying on Tauri defaults.
           New-PortableZipWithOfflineBundle
 
+          # Functional verification: portable zip -> offline payload -> openclaw gateway reachable.
+          node scripts/test-windows-portable-install.mjs src-tauri/target/release/bundle/portable/openclaw-desktop-windows-portable.zip
+
           if (-not $nsisReady) {
             Write-Output "::warning title=NSIS fallback::NSIS setup is unavailable or suspiciously small; validated portable zip artifact is still published."
           }
