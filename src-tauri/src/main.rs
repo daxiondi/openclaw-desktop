@@ -3124,9 +3124,22 @@ fn start_oauth_login(provider_id: String) -> LoginResult {
     }
 }
 
+fn normalize_ollama_endpoint(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return "http://127.0.0.1:11434".to_string();
+    }
+    let with_scheme = if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        trimmed.to_string()
+    } else {
+        format!("http://{}", trimmed)
+    };
+    with_scheme.trim_end_matches('/').to_string()
+}
+
 #[tauri::command]
-async fn check_ollama() -> Result<OllamaStatus, String> {
-    let endpoint = "http://127.0.0.1:11434".to_string();
+async fn check_ollama(endpoint: Option<String>) -> Result<OllamaStatus, String> {
+    let endpoint = normalize_ollama_endpoint(endpoint.as_deref().unwrap_or_default());
     let url = format!("{}/api/tags", endpoint);
 
     let response = reqwest::get(url).await.map_err(|err| err.to_string())?;

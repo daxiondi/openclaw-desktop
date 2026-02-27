@@ -57,8 +57,19 @@ const fallbackLocalTools: LocalOAuthToolStatus[] = [
   }
 ];
 
+const defaultOllamaEndpoint = "http://127.0.0.1:11434";
+
 function isTauriRuntime(): boolean {
   return typeof window !== "undefined" && typeof window.__TAURI_INTERNALS__ !== "undefined";
+}
+
+function normalizeOllamaEndpoint(endpoint?: string): string {
+  const trimmed = endpoint?.trim() ?? "";
+  if (!trimmed) {
+    return defaultOllamaEndpoint;
+  }
+  const withScheme = /^https?:\/\//iu.test(trimmed) ? trimmed : `http://${trimmed}`;
+  return withScheme.replace(/\/+$/u, "");
 }
 
 function toHumanLabel(providerId: string): string {
@@ -136,23 +147,23 @@ export const openclawBridge: OpenClawBridge = {
     return invoke<OAuthLoginResult>("start_oauth_login", { providerId });
   },
 
-  async checkOllama() {
+  async checkOllama(endpoint?: string) {
+    const normalizedEndpoint = normalizeOllamaEndpoint(endpoint);
     if (!isTauriRuntime()) {
-      const endpoint = "http://127.0.0.1:11434";
       try {
-        const response = await fetch(`${endpoint}/api/tags`, { method: "GET" });
+        const response = await fetch(`${normalizedEndpoint}/api/tags`, { method: "GET" });
         if (!response.ok) {
-          return { endpoint, reachable: false, models: [], error: `HTTP ${response.status}` };
+          return { endpoint: normalizedEndpoint, reachable: false, models: [], error: `HTTP ${response.status}` };
         }
         const payload = (await response.json()) as { models?: Array<{ name?: string }> };
         return {
-          endpoint,
+          endpoint: normalizedEndpoint,
           reachable: true,
           models: (payload.models ?? []).map((model) => model.name ?? "").filter(Boolean)
         } satisfies OllamaStatus;
       } catch (error) {
         return {
-          endpoint,
+          endpoint: normalizedEndpoint,
           reachable: false,
           models: [],
           error: error instanceof Error ? error.message : String(error)
@@ -160,7 +171,7 @@ export const openclawBridge: OpenClawBridge = {
       }
     }
 
-    return invoke<OllamaStatus>("check_ollama");
+    return invoke<OllamaStatus>("check_ollama", { endpoint: normalizedEndpoint });
   },
 
   async bootstrapOpenClaw() {

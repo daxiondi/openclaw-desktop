@@ -44,6 +44,7 @@ export default function Onboarding({ onStatus, onLoginSuccess }: Props) {
   const [apiProvider, setApiProvider] = useState("openai");
   const [apiKey, setApiKey] = useState("");
   const [ollamaStatus, setOllamaStatus] = useState<OllamaStatus>(defaultOllamaStatus);
+  const [ollamaEndpoint, setOllamaEndpoint] = useState(defaultOllamaStatus.endpoint);
   const [codexAuthStatus, setCodexAuthStatus] = useState<CodexAuthStatus>(defaultCodexAuthStatus);
   const [codexConnectivityStatus, setCodexConnectivityStatus] = useState<CodexConnectivityStatus>(
     defaultCodexConnectivityStatus
@@ -209,8 +210,9 @@ export default function Onboarding({ onStatus, onLoginSuccess }: Props) {
     setBusy(true);
     onStatus(t("status.loading"));
     try {
-      const status = await openclawBridge.checkOllama();
+      const status = await openclawBridge.checkOllama(ollamaEndpoint);
       setOllamaStatus(status);
+      setOllamaEndpoint(status.endpoint);
       onStatus(status.reachable ? t("ollama.ok") : `${t("ollama.fail")}: ${status.error ?? "unknown"}`);
     } catch (error) {
       onStatus(`${t("status.error")}: ${error instanceof Error ? error.message : String(error)}`);
@@ -347,7 +349,15 @@ export default function Onboarding({ onStatus, onLoginSuccess }: Props) {
         <div className="panel">
           <label className="field">
             <span>{t("ollama.endpoint")}</span>
-            <input value={ollamaStatus.endpoint} readOnly />
+            <input
+              value={ollamaEndpoint}
+              onChange={(event) => {
+                const nextEndpoint = event.target.value;
+                setOllamaEndpoint(nextEndpoint);
+                setOllamaStatus((previous) => ({ ...previous, endpoint: nextEndpoint, error: undefined }));
+              }}
+              placeholder={defaultOllamaStatus.endpoint}
+            />
           </label>
           <div className="action-row">
             <button type="button" className="primary" onClick={() => void handleOllamaCheck()} disabled={busy}>
