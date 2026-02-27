@@ -36,13 +36,40 @@ const defaultCodexConnectivityStatus: CodexConnectivityStatus = {
 
 const defaultLocalOAuthTools: LocalOAuthToolStatus[] = [];
 
+type ApiKeyProviderOption = {
+  id: string;
+  labelKey: string;
+  providerId: string;
+  defaultBaseUrl: string;
+  defaultModel: string;
+};
+
+const apiKeyProviderOptions: ApiKeyProviderOption[] = [
+  {
+    id: "openai",
+    labelKey: "apikey.provider.openai",
+    providerId: "openai",
+    defaultBaseUrl: "https://api.openai.com/v1",
+    defaultModel: "gpt-5-mini"
+  },
+  {
+    id: "anthropic",
+    labelKey: "apikey.provider.anthropic",
+    providerId: "anthropic",
+    defaultBaseUrl: "https://api.anthropic.com",
+    defaultModel: "claude-sonnet-4-5"
+  }
+];
+
 export default function Onboarding({ onStatus, onLoginSuccess }: Props) {
   const { t } = useTranslation();
   const [mode, setMode] = useState<Mode>("oauth");
   const [providers, setProviders] = useState<OAuthProvider[]>([]);
   const [selectedProvider, setSelectedProvider] = useState<string>("");
-  const [apiProvider, setApiProvider] = useState("openai");
+  const [apiProvider, setApiProvider] = useState(apiKeyProviderOptions[0].id);
   const [apiKey, setApiKey] = useState("");
+  const [apiBaseUrl, setApiBaseUrl] = useState(apiKeyProviderOptions[0].defaultBaseUrl);
+  const [apiDefaultModel, setApiDefaultModel] = useState(apiKeyProviderOptions[0].defaultModel);
   const [ollamaStatus, setOllamaStatus] = useState<OllamaStatus>(defaultOllamaStatus);
   const [ollamaEndpoint, setOllamaEndpoint] = useState(defaultOllamaStatus.endpoint);
   const [codexAuthStatus, setCodexAuthStatus] = useState<CodexAuthStatus>(defaultCodexAuthStatus);
@@ -60,6 +87,11 @@ export default function Onboarding({ onStatus, onLoginSuccess }: Props) {
       { id: "ollama" as const, title: t("mode.ollama"), recommended: false }
     ],
     [t]
+  );
+
+  const selectedApiProvider = useMemo(
+    () => apiKeyProviderOptions.find((option) => option.id === apiProvider) ?? apiKeyProviderOptions[0],
+    [apiProvider]
   );
 
   async function refreshProviders() {
@@ -189,16 +221,30 @@ export default function Onboarding({ onStatus, onLoginSuccess }: Props) {
     }
   }
 
+  function handleApiProviderChange(nextProviderId: string) {
+    const nextProvider =
+      apiKeyProviderOptions.find((provider) => provider.id === nextProviderId) ?? apiKeyProviderOptions[0];
+    setApiProvider(nextProvider.id);
+    setApiBaseUrl(nextProvider.defaultBaseUrl);
+    setApiDefaultModel(nextProvider.defaultModel);
+  }
+
   async function handleApiKeySave() {
-    if (!apiProvider.trim() || !apiKey.trim()) {
+    if (!selectedApiProvider.providerId.trim() || !apiKey.trim()) {
       return;
     }
     setBusy(true);
     onStatus(t("status.loading"));
     try {
-      await openclawBridge.saveApiKey(apiProvider.trim(), apiKey.trim());
+      await openclawBridge.saveApiKey(
+        selectedApiProvider.providerId,
+        apiKey.trim(),
+        apiBaseUrl.trim() || undefined,
+        apiDefaultModel.trim() || undefined
+      );
       setApiKey("");
-      onStatus(t("status.apikey.saved"));
+      onStatus(t("status.apikey.saved", { provider: selectedApiProvider.providerId, model: apiDefaultModel.trim() || "-" }));
+      onLoginSuccess();
     } catch (error) {
       onStatus(`${t("status.error")}: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
@@ -353,17 +399,37 @@ export default function Onboarding({ onStatus, onLoginSuccess }: Props) {
         <div className="panel">
           <label className="field">
             <span>{t("apikey.provider")}</span>
-            <input value={apiProvider} onChange={(event) => setApiProvider(event.target.value)} />
+            <select value={apiProvider} onChange={(event) => handleApiProviderChange(event.target.value)} disabled={busy}>
+              {apiKeyProviderOptions.map((provider) => (
+                <option key={provider.id} value={provider.id}>
+                  {t(provider.labelKey)}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="field">
+            <span>{t("apikey.baseUrl")}</span>
+            <input value={apiBaseUrl} onChange={(event) => setApiBaseUrl(event.target.value)} placeholder={selectedApiProvider.defaultBaseUrl} />
           </label>
           <label className="field">
             <span>{t("apikey.key")}</span>
             <input type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} />
+          </label>
+          <label className="field">
+            <span>{t("apikey.model")}</span>
+            <input
+              value={apiDefaultModel}
+              onChange={(event) => setApiDefaultModel(event.target.value)}
+              placeholder={selectedApiProvider.defaultModel}
+            />
           </label>
           <div className="action-row">
             <button type="button" className="primary" onClick={() => void handleApiKeySave()} disabled={busy || !apiKey.trim()}>
               {t("apikey.save")}
             </button>
           </div>
+          <p className="hint">{t("apikey.baseUrl.hint")}</p>
+          <p className="hint">{t("apikey.model.hint", { provider: selectedApiProvider.providerId })}</p>
           <p className="hint">{t("apikey.hint")}</p>
         </div>
       ) : null}

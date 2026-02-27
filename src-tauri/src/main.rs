@@ -1504,6 +1504,96 @@ fn normalize_provider_id(raw: &str) -> Option<String> {
     Some(canonical.to_string())
 }
 
+fn normalize_api_key_provider_id(raw: &str) -> Option<String> {
+    let normalized = normalize_provider_id(raw)?;
+    let canonical = match normalized.as_str() {
+        "openai-compatible" | "openai_compatible" | "openai-proxy" | "openai-gateway"
+        | "gateway" | "proxy" => "openai",
+        _ => normalized.as_str(),
+    };
+    Some(canonical.to_string())
+}
+
+fn resolve_api_key_provider_api(provider_id: &str) -> &'static str {
+    match provider_id {
+        "anthropic" => "anthropic-messages",
+        _ => "openai-completions",
+    }
+}
+
+fn normalize_api_key_base_url(raw: Option<&str>) -> Option<String> {
+    let trimmed = raw?.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let with_scheme = if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        trimmed.to_string()
+    } else if trimmed.starts_with("localhost")
+        || trimmed.starts_with("127.0.0.1")
+        || trimmed.starts_with("[::1]")
+    {
+        format!("http://{}", trimmed)
+    } else {
+        format!("https://{}", trimmed)
+    };
+
+    let normalized = with_scheme.trim_end_matches('/').to_string();
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(normalized)
+    }
+}
+
+fn resolve_api_key_default_model(provider_id: &str) -> &'static str {
+    match provider_id {
+        "anthropic" => "anthropic/claude-sonnet-4-5",
+        _ => "openai/gpt-5-mini",
+    }
+}
+
+fn normalize_anthropic_model_id(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    let lowered = trimmed.to_ascii_lowercase();
+    match lowered.as_str() {
+        "opus-4.5" => "claude-opus-4-5".to_string(),
+        "sonnet-4.5" => "claude-sonnet-4-5".to_string(),
+        _ => trimmed.to_string(),
+    }
+}
+
+fn normalize_api_key_model_ref(raw: Option<&str>, provider_id: &str) -> String {
+    let Some(trimmed) = raw.map(str::trim).filter(|value| !value.is_empty()) else {
+        return resolve_api_key_default_model(provider_id).to_string();
+    };
+
+    if let Some((provider_raw, model_raw)) = trimmed.split_once('/') {
+        let provider = provider_raw.trim().to_ascii_lowercase();
+        let model_raw = model_raw.trim();
+        if provider.is_empty() || model_raw.is_empty() {
+            return resolve_api_key_default_model(provider_id).to_string();
+        }
+        let model = if provider == "anthropic" {
+            normalize_anthropic_model_id(model_raw)
+        } else {
+            model_raw.to_string()
+        };
+        return format!("{}/{}", provider, model);
+    }
+
+    let model = if provider_id == "anthropic" {
+        normalize_anthropic_model_id(trimmed)
+    } else {
+        trimmed.to_string()
+    };
+    format!("{}/{}", provider_id, model)
+}
+
 fn looks_like_oauth_provider(choice: &str) -> bool {
     if OPENCLAW_AUTH_CHOICE_NON_PROVIDER.contains(&choice) {
         return false;
@@ -3967,15 +4057,120 @@ fn reuse_local_codex_auth(set_default_model: Option<bool>) -> LocalCodexReuseRes
 }
 
 #[tauri::command]
-fn save_api_key(provider_id: String, api_key: String) -> Result<serde_json::Value, String> {
-    if provider_id.trim().is_empty() {
+fn save_api_key(
+    provider_id: String,
+    api_key: String,
+    base_url: Option<String>,
+    default_model: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let normalized_provider_id = normalize_api_key_provider_id(&provider_id)
+        .ok_or_else(|| "provider_id is required".to_string())?;
+    if normalized_provider_id.trim().is_empty() {
         return Err("provider_id is required".to_string());
     }
-    if api_key.trim().is_empty() {
+    let normalized_api_key = api_key.trim();
+    if normalized_api_key.is_empty() {
         return Err("api_key is required".to_string());
     }
 
-    Ok(serde_json::json!({ "ok": true }))
+    let normalized_base_url = normalize_api_key_base_url(base_url.as_deref());
+    let normalized_default_model =
+        normalize_api_key_model_ref(default_model.as_deref(), &normalized_provider_id);
+    let provider_api = resolve_api_key_provider_api(&normalized_provider_id);
+
+    let mut config_value = load_openclaw_config_value();
+    if !config_value.is_object() {
+        config_value = serde_json::json!({});
+    }
+
+    let config_obj = config_value
+        .as_object_mut()
+        .ok_or_else(|| "Failed to parse OpenClaw config root object.".to_string())?;
+
+    let models_entry = config_obj
+        .entry("models".to_string())
+        .or_insert_with(|| serde_json::json!({}));
+    if !models_entry.is_object() {
+        *models_entry = serde_json::json!({});
+    }
+    let models_obj = models_entry
+        .as_object_mut()
+        .ok_or_else(|| "Failed to parse OpenClaw config models object.".to_string())?;
+
+    let providers_entry = models_obj
+        .entry("providers".to_string())
+        .or_insert_with(|| serde_json::json!({}));
+    if !providers_entry.is_object() {
+        *providers_entry = serde_json::json!({});
+    }
+    let providers_obj = providers_entry
+        .as_object_mut()
+        .ok_or_else(|| "Failed to parse OpenClaw config models.providers object.".to_string())?;
+
+    let existing_provider_obj = providers_obj
+        .get(&normalized_provider_id)
+        .and_then(|value| value.as_object())
+        .cloned()
+        .unwrap_or_default();
+    let mut next_provider_obj = existing_provider_obj;
+    next_provider_obj.insert("api".to_string(), serde_json::json!(provider_api));
+    next_provider_obj.insert("apiKey".to_string(), serde_json::json!(normalized_api_key));
+    if let Some(value) = &normalized_base_url {
+        next_provider_obj.insert("baseUrl".to_string(), serde_json::json!(value));
+    } else {
+        next_provider_obj.remove("baseUrl");
+    }
+    providers_obj.insert(
+        normalized_provider_id.clone(),
+        serde_json::Value::Object(next_provider_obj),
+    );
+
+    let agents_entry = config_obj
+        .entry("agents".to_string())
+        .or_insert_with(|| serde_json::json!({}));
+    if !agents_entry.is_object() {
+        *agents_entry = serde_json::json!({});
+    }
+    let agents_obj = agents_entry
+        .as_object_mut()
+        .ok_or_else(|| "Failed to parse OpenClaw config agents object.".to_string())?;
+
+    let defaults_entry = agents_obj
+        .entry("defaults".to_string())
+        .or_insert_with(|| serde_json::json!({}));
+    if !defaults_entry.is_object() {
+        *defaults_entry = serde_json::json!({});
+    }
+    let defaults_obj = defaults_entry
+        .as_object_mut()
+        .ok_or_else(|| "Failed to parse OpenClaw config agents.defaults object.".to_string())?;
+
+    let model_entry = defaults_obj
+        .entry("model".to_string())
+        .or_insert_with(|| serde_json::json!({}));
+    match model_entry {
+        serde_json::Value::Object(model_obj) => {
+            model_obj.insert(
+                "primary".to_string(),
+                serde_json::json!(normalized_default_model.clone()),
+            );
+        }
+        _ => {
+            *model_entry = serde_json::json!({
+                "primary": normalized_default_model.clone()
+            });
+        }
+    }
+
+    save_openclaw_config_value(&config_value)?;
+
+    Ok(serde_json::json!({
+        "ok": true,
+        "providerId": normalized_provider_id,
+        "api": provider_api,
+        "baseUrl": normalized_base_url,
+        "defaultModel": normalized_default_model
+    }))
 }
 
 fn read_local_codex_auth_status() -> CodexAuthStatus {

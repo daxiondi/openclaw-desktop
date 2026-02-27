@@ -129,7 +129,12 @@ export type OpenClawBridge = {
   getBrowserRelayStatus: () => Promise<BrowserRelayStatus>;
   prepareBrowserRelay: () => Promise<BrowserRelayStatus>;
   diagnoseBrowserRelay: () => Promise<BrowserRelayDiagnostic>;
-  saveApiKey: (providerId: string, apiKey: string) => Promise<{ ok: boolean }>;
+  saveApiKey: (
+    providerId: string,
+    apiKey: string,
+    baseUrl?: string,
+    defaultModel?: string
+  ) => Promise<{ ok: boolean }>;
   detectLocalCodexAuth: () => Promise<CodexAuthStatus>;
   reuseLocalCodexAuth: (setDefaultModel?: boolean) => Promise<LocalCodexReuseResult>;
   validateLocalCodexConnectivity: () => Promise<CodexConnectivityStatus>;

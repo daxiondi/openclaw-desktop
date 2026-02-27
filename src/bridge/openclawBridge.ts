@@ -378,11 +378,16 @@ export const openclawBridge: OpenClawBridge = {
     return invoke<BrowserRelayDiagnostic>("diagnose_browser_relay");
   },
 
-  async saveApiKey(providerId: string, apiKey: string) {
+  async saveApiKey(providerId: string, apiKey: string, baseUrl?: string, defaultModel?: string) {
     if (!isTauriRuntime()) {
       return { ok: providerId.trim().length > 0 && apiKey.trim().length > 0 };
     }
-    return invoke<{ ok: boolean }>("save_api_key", { providerId, apiKey });
+    return invoke<{ ok: boolean }>("save_api_key", {
+      providerId,
+      apiKey,
+      baseUrl: baseUrl?.trim() || undefined,
+      defaultModel: defaultModel?.trim() || undefined
+    });
   },
 
   async detectLocalCodexAuth() {
