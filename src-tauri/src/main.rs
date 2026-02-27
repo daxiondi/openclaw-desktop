@@ -79,6 +79,14 @@ struct OllamaStatus {
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
+struct OllamaApplyResult {
+    endpoint: String,
+    model: String,
+    discovered_models: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 struct CodexAuthStatus {
     detected: bool,
     source: String,
@@ -3137,17 +3145,32 @@ fn normalize_ollama_endpoint(raw: &str) -> String {
     with_scheme.trim_end_matches('/').to_string()
 }
 
-#[tauri::command]
-async fn check_ollama(endpoint: Option<String>) -> Result<OllamaStatus, String> {
-    let endpoint = normalize_ollama_endpoint(endpoint.as_deref().unwrap_or_default());
-    let url = format!("{}/api/tags", endpoint);
+fn normalize_ollama_model_name(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
 
+    if let Some(stripped) = trimmed.strip_prefix("ollama/") {
+        let normalized = stripped.trim();
+        if normalized.is_empty() {
+            None
+        } else {
+            Some(normalized.to_string())
+        }
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+async fn fetch_ollama_status(endpoint: &str) -> Result<OllamaStatus, String> {
+    let url = format!("{}/api/tags", endpoint);
     let response = reqwest::get(url).await.map_err(|err| err.to_string())?;
     let status = response.status();
 
     if !status.is_success() {
         return Ok(OllamaStatus {
-            endpoint,
+            endpoint: endpoint.to_string(),
             reachable: false,
             models: vec![],
             error: Some(format!("HTTP {}", status.as_u16())),
@@ -3167,10 +3190,167 @@ async fn check_ollama(endpoint: Option<String>) -> Result<OllamaStatus, String> 
         .collect::<Vec<_>>();
 
     Ok(OllamaStatus {
-        endpoint,
+        endpoint: endpoint.to_string(),
         reachable: true,
         models,
         error: None,
+    })
+}
+
+#[tauri::command]
+async fn check_ollama(endpoint: Option<String>) -> Result<OllamaStatus, String> {
+    let endpoint = normalize_ollama_endpoint(endpoint.as_deref().unwrap_or_default());
+    fetch_ollama_status(&endpoint).await
+}
+
+#[tauri::command]
+async fn apply_ollama_config(
+    endpoint: Option<String>,
+    preferred_model: Option<String>,
+) -> Result<OllamaApplyResult, String> {
+    let endpoint = normalize_ollama_endpoint(endpoint.as_deref().unwrap_or_default());
+    let status = fetch_ollama_status(&endpoint).await?;
+
+    if !status.reachable {
+        return Err(
+            status
+                .error
+                .unwrap_or_else(|| "Ollama endpoint is not reachable.".to_string()),
+        );
+    }
+
+    let discovered_models = status.models;
+    let selected_model_name = preferred_model
+        .as_deref()
+        .and_then(normalize_ollama_model_name)
+        .or_else(|| {
+            discovered_models
+                .first()
+                .and_then(|name| normalize_ollama_model_name(name))
+        })
+        .ok_or_else(|| "No Ollama model found. Run `ollama pull <model>` first.".to_string())?;
+
+    let selected_model_id = format!("ollama/{}", selected_model_name);
+
+    let mut config_value = load_openclaw_config_value();
+    if !config_value.is_object() {
+        config_value = serde_json::json!({});
+    }
+
+    let config_obj = config_value
+        .as_object_mut()
+        .ok_or_else(|| "Failed to parse OpenClaw config root object.".to_string())?;
+
+    let models_entry = config_obj
+        .entry("models".to_string())
+        .or_insert_with(|| serde_json::json!({}));
+    if !models_entry.is_object() {
+        *models_entry = serde_json::json!({});
+    }
+    let models_obj = models_entry
+        .as_object_mut()
+        .ok_or_else(|| "Failed to parse OpenClaw config models object.".to_string())?;
+
+    let providers_entry = models_obj
+        .entry("providers".to_string())
+        .or_insert_with(|| serde_json::json!({}));
+    if !providers_entry.is_object() {
+        *providers_entry = serde_json::json!({});
+    }
+    let providers_obj = providers_entry
+        .as_object_mut()
+        .ok_or_else(|| "Failed to parse OpenClaw config models.providers object.".to_string())?;
+    providers_obj.insert(
+        "ollama".to_string(),
+        serde_json::json!({
+            "api": "ollama",
+            "baseUrl": endpoint.clone(),
+            "apiKey": "ollama"
+        }),
+    );
+
+    let retained_models = models_obj
+        .get("models")
+        .and_then(|value| value.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter(|item| {
+                    let provider = item.get("provider").and_then(|value| value.as_str());
+                    let model_id = item.get("id").and_then(|value| value.as_str()).unwrap_or_default();
+                    provider != Some("ollama") && !model_id.starts_with("ollama/")
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    let mut merged_models = retained_models;
+    merged_models.extend(
+        discovered_models
+            .iter()
+            .filter_map(|name| normalize_ollama_model_name(name))
+            .map(|name| {
+                serde_json::json!({
+                    "id": format!("ollama/{}", name),
+                    "name": name,
+                    "provider": "ollama",
+                    "reasoning": false,
+                    "input": ["text"],
+                    "cost": {
+                        "input": 0,
+                        "output": 0
+                    },
+                    "contextWindow": 8192,
+                    "maxTokens": 8192
+                })
+            }),
+    );
+    models_obj.insert("models".to_string(), serde_json::Value::Array(merged_models));
+
+    let agents_entry = config_obj
+        .entry("agents".to_string())
+        .or_insert_with(|| serde_json::json!({}));
+    if !agents_entry.is_object() {
+        *agents_entry = serde_json::json!({});
+    }
+    let agents_obj = agents_entry
+        .as_object_mut()
+        .ok_or_else(|| "Failed to parse OpenClaw config agents object.".to_string())?;
+
+    let defaults_entry = agents_obj
+        .entry("defaults".to_string())
+        .or_insert_with(|| serde_json::json!({}));
+    if !defaults_entry.is_object() {
+        *defaults_entry = serde_json::json!({});
+    }
+    let defaults_obj = defaults_entry
+        .as_object_mut()
+        .ok_or_else(|| "Failed to parse OpenClaw config agents.defaults object.".to_string())?;
+
+    let model_entry = defaults_obj
+        .entry("model".to_string())
+        .or_insert_with(|| serde_json::json!({}));
+    match model_entry {
+        serde_json::Value::Object(model_obj) => {
+            model_obj.insert(
+                "primary".to_string(),
+                serde_json::json!(selected_model_id.clone()),
+            );
+        }
+        _ => {
+            *model_entry = serde_json::json!({
+                "primary": selected_model_id
+            });
+        }
+    }
+
+    save_openclaw_config_value(&config_value)?;
+
+    Ok(OllamaApplyResult {
+        endpoint,
+        model: format!("ollama/{}", selected_model_name),
+        discovered_models,
     })
 }
 
@@ -4008,6 +4188,7 @@ fn main() {
             list_oauth_providers,
             start_oauth_login,
             check_ollama,
+            apply_ollama_config,
             bootstrap_openclaw,
             select_windows_portable_bundle_file,
             bootstrap_openclaw_with_selected_bundle,

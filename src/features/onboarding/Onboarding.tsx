@@ -221,6 +221,29 @@ export default function Onboarding({ onStatus, onLoginSuccess }: Props) {
     }
   }
 
+  async function handleOllamaApply() {
+    setBusy(true);
+    onStatus(t("status.loading"));
+    try {
+      const status = await openclawBridge.checkOllama(ollamaEndpoint);
+      setOllamaStatus(status);
+      setOllamaEndpoint(status.endpoint);
+
+      if (!status.reachable) {
+        onStatus(`${t("ollama.fail")}: ${status.error ?? "unknown"}`);
+        return;
+      }
+
+      const result = await openclawBridge.applyOllamaConfig(status.endpoint, status.models[0]);
+      onStatus(t("status.ollama.applied", { model: result.model }));
+      onLoginSuccess();
+    } catch (error) {
+      onStatus(`${t("status.error")}: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <section className="onboarding-shell">
       <div className="mode-grid">
@@ -359,8 +382,12 @@ export default function Onboarding({ onStatus, onLoginSuccess }: Props) {
               placeholder={defaultOllamaStatus.endpoint}
             />
           </label>
+          <p className="hint">{t("ollama.defaultHint", { endpoint: defaultOllamaStatus.endpoint })}</p>
           <div className="action-row">
-            <button type="button" className="primary" onClick={() => void handleOllamaCheck()} disabled={busy}>
+            <button type="button" className="primary" onClick={() => void handleOllamaApply()} disabled={busy}>
+              {t("ollama.apply")}
+            </button>
+            <button type="button" onClick={() => void handleOllamaCheck()} disabled={busy}>
               {t("ollama.check")}
             </button>
           </div>

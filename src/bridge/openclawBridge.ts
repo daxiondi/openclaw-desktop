@@ -9,6 +9,7 @@ import type {
   LocalCodexReuseResult,
   LocalOAuthToolStatus,
   OpenOfficialWebResult,
+  OllamaApplyResult,
   OfficialWebStatus,
   OAuthLoginResult,
   OAuthProvider,
@@ -172,6 +173,40 @@ export const openclawBridge: OpenClawBridge = {
     }
 
     return invoke<OllamaStatus>("check_ollama", { endpoint: normalizedEndpoint });
+  },
+
+  async applyOllamaConfig(endpoint?: string, preferredModel?: string) {
+    const normalizedEndpoint = normalizeOllamaEndpoint(endpoint);
+    if (!isTauriRuntime()) {
+      let models: string[] = [];
+      let selectedEndpoint = normalizedEndpoint;
+      try {
+        const response = await fetch(`${normalizedEndpoint}/api/tags`, { method: "GET" });
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        const payload = (await response.json()) as { models?: Array<{ name?: string }> };
+        models = (payload.models ?? []).map((model) => model.name ?? "").filter(Boolean);
+      } catch (error) {
+        throw new Error(error instanceof Error ? error.message : String(error));
+      }
+
+      const selectedModel = preferredModel?.trim() || models[0] || "";
+      if (!selectedModel) {
+        throw new Error("No Ollama model found. Run `ollama pull <model>` first.");
+      }
+
+      return {
+        endpoint: selectedEndpoint,
+        model: selectedModel.startsWith("ollama/") ? selectedModel : `ollama/${selectedModel}`,
+        discoveredModels: models
+      } satisfies OllamaApplyResult;
+    }
+
+    return invoke<OllamaApplyResult>("apply_ollama_config", {
+      endpoint: normalizedEndpoint,
+      preferredModel: preferredModel?.trim() || undefined
+    });
   },
 
   async bootstrapOpenClaw() {

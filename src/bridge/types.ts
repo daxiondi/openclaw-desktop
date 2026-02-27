@@ -50,6 +50,12 @@ export type OllamaStatus = {
   error?: string;
 };
 
+export type OllamaApplyResult = {
+  endpoint: string;
+  model: string;
+  discoveredModels: string[];
+};
+
 export type OfficialWebStatus = {
   ready: boolean;
   installed: boolean;
@@ -112,6 +118,7 @@ export type OpenClawBridge = {
   detectLocalOAuthTools: () => Promise<LocalOAuthToolStatus[]>;
   startOAuthLogin: (providerId: string) => Promise<OAuthLoginResult>;
   checkOllama: (endpoint?: string) => Promise<OllamaStatus>;
+  applyOllamaConfig: (endpoint?: string, preferredModel?: string) => Promise<OllamaApplyResult>;
   bootstrapOpenClaw: () => Promise<BootstrapStatus>;
   selectWindowsPortableBundleFile: () => Promise<string | null>;
   bootstrapOpenClawWithSelectedBundle: (bundleZipPath: string) => Promise<BootstrapStatus>;
