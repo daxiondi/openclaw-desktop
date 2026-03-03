@@ -58,7 +58,7 @@ npm run test:windows-portable -- C:\\path\\to\\openclaw-desktop-windows-portable
 
 扫码加入 `openclaw` 交流群：
 
-![openclaw交流群二维码](./src/assets/wechat.jpg)
+![openclaw交流群二维码](./src/assets/微信图片_20260303111141_125_35.jpg)
 
 ## 在线更新（自动检测 + 一键更新）
 
