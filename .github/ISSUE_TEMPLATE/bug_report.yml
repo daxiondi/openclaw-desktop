@@ -1,0 +1,115 @@
+name: 缺陷反馈
+description: 反馈功能异常、回归、崩溃、行为错误等问题。
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈。请尽量提供可复现、可验证的证据，便于快速定位。
+  - type: dropdown
+    id: bug_type
+    attributes:
+      label: 问题类型
+      description: 请选择最符合的类别。
+      options:
+        - 回归问题（以前正常，现在异常）
+        - 崩溃/卡死（进程退出、无响应、界面卡住）
+        - 行为错误（未崩溃，但结果/状态不符合预期）
+    validations:
+      required: true
+  - type: textarea
+    id: summary
+    attributes:
+      label: 问题概述
+      description: 用一句话描述“哪里坏了”。
+      placeholder: 升级到 <版本> 后，<功能> 从 <旧版本行为> 变成 <异常行为>。
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: 复现步骤
+      description: 请提供最短、稳定、可重复的复现路径。
+      placeholder: |
+        1. 打开应用并进入 <页面>
+        2. 选择 <模型/配置>
+        3. 点击 <操作>
+        4. 出现 <异常现象>
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望行为
+      description: 在没有该缺陷时，正确结果应是什么。
+      placeholder: 例如：点击发送后应在同一线程正常回复。
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际行为
+      description: 实际发生了什么，包含可见错误提示。
+      placeholder: 例如：无回复，日志提示 "reply target not found"。
+    validations:
+      required: true
+  - type: input
+    id: desktop_version
+    attributes:
+      label: openclaw-desktop 版本
+      description: 请填写你当前使用的 openclaw-desktop 精确版本号。
+      placeholder: 例如 0.1.0
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: 操作系统及版本
+      description: 请填写发生问题的操作系统和版本号。
+      placeholder: 例如 Windows 11 24H2 / macOS 15.4 / Ubuntu 24.04
+    validations:
+      required: true
+  - type: input
+    id: model
+    attributes:
+      label: 使用模型
+      description: 请填写出现问题时使用的模型（含提供商与模型名）。
+      placeholder: 例如 openai/gpt-4.1 / anthropic/claude-3-7-sonnet / ollama/qwen2.5:14b
+    validations:
+      required: true
+  - type: input
+    id: install_method
+    attributes:
+      label: 安装方式
+      description: 请说明安装或启动方式。
+      placeholder: 例如 安装包覆盖安装 / 首次安装 / 便携包 / 开发模式
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志、截图与证据
+      description: 请附上脱敏后的日志、截图或录屏，证明问题存在。
+      render: shell
+  - type: textarea
+    id: impact
+    attributes:
+      label: 影响范围与严重程度
+      description: |
+        请说明受影响对象、严重程度、发生频率和实际后果。
+        建议包含：
+        - 影响对象（用户/系统/渠道）
+        - 严重程度（轻微/阻塞/数据风险）
+        - 发生频率（必现/偶现/边缘场景）
+        - 实际后果（无法回复、配置丢失、额外成本等）
+      placeholder: |
+        影响对象：Windows 用户
+        严重程度：高（阻塞核心流程）
+        发生频率：100% 可复现
+        实际后果：每次重启都需要重新配置模型
+  - type: textarea
+    id: additional_information
+    attributes:
+      label: 补充信息
+      description: 其他有助于排查的信息。如为回归问题，请提供最后正常版本与首次异常版本。
+      placeholder: 最后正常版本 <...>，首次异常版本 <...>，临时绕过方式 <...>

@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 使用问题与讨论
+    url: https://github.com/daxiondi/openclaw-desktop/discussions
+    about: 非缺陷类问题（使用咨询、建议）请优先发到 Discussions。
