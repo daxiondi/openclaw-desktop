@@ -53,12 +53,12 @@ function scoreCandidate(lowerName) {
   let score = 0;
   if (lowerName.endsWith(".app.tar.gz")) score += 300;
   if (lowerName.endsWith(".appimage") || lowerName.endsWith(".appimage.tar.gz")) score += 300;
-  if (lowerName.includes("setup") && lowerName.endsWith(".exe")) score += 300;
-  if (lowerName.endsWith(".msi")) score += 260;
+  if (lowerName.includes("setup") && lowerName.endsWith(".exe")) score += 260;
+  if (lowerName.endsWith(".msi")) score += 300;
   if (lowerName.endsWith(".deb")) score += 240;
   if (lowerName.endsWith(".rpm")) score += 230;
   if (lowerName.endsWith(".nsis.zip")) score += 220;
-  if (lowerName.endsWith(".msi.zip")) score += 210;
+  if (lowerName.endsWith(".msi.zip")) score += 280;
   if (lowerName.includes("portable")) score -= 100;
   return score;
 }

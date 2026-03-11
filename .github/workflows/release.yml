@@ -53,13 +53,6 @@ jobs:
             librsvg2-dev \
             patchelf
 
-      - name: Install NSIS (Windows)
-        if: matrix.family == 'windows'
-        shell: powershell
-        run: |
-          choco install nsis --no-progress -y
-          Add-Content $env:GITHUB_PATH "C:\Program Files (x86)\NSIS"
-
       - name: Install npm dependencies
         run: npm install
 
@@ -285,24 +278,24 @@ jobs:
 
           Invoke-PrepareBundleWithRetry
 
-          $nsisLog = "windows-nsis-build.log"
-          $nsisReady = $true
-          npx tauri build --bundles nsis *>&1 | Tee-Object -FilePath $nsisLog
+          $msiLog = "windows-msi-build.log"
+          $msiReady = $true
+          npx tauri build --bundles msi *>&1 | Tee-Object -FilePath $msiLog
           if ($LASTEXITCODE -ne 0) {
-            $tail = (Get-Content $nsisLog -Tail 120) -join "`n"
+            $tail = (Get-Content $msiLog -Tail 120) -join "`n"
             $escaped = $tail.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
-            Write-Output "::warning title=NSIS build failed; fallback to portable zip::$escaped"
-            $nsisReady = $false
+            Write-Output "::warning title=MSI build failed; fallback to portable zip::$escaped"
+            $msiReady = $false
           }
 
-          if ($nsisReady) {
-            $setupExe = Get-ChildItem "src-tauri/target/release/bundle/nsis" -Filter "*-setup.exe" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-            if ($null -eq $setupExe) {
-              Write-Output "::warning title=NSIS artifact missing; fallback to portable zip::No Windows setup artifact found in bundle/nsis"
-              $nsisReady = $false
-            } elseif ($setupExe.Length -lt 50MB) {
-              Write-Output "::warning title=NSIS artifact suspiciously small; fallback to portable zip::File=$($setupExe.Name), SizeBytes=$($setupExe.Length)"
-              $nsisReady = $false
+          if ($msiReady) {
+            $msiFile = Get-ChildItem "src-tauri/target/release/bundle/msi" -Filter "*.msi" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+            if ($null -eq $msiFile) {
+              Write-Output "::warning title=MSI artifact missing; fallback to portable zip::No Windows MSI artifact found in bundle/msi"
+              $msiReady = $false
+            } elseif ($msiFile.Length -lt 50MB) {
+              Write-Output "::warning title=MSI artifact suspiciously small; fallback to portable zip::File=$($msiFile.Name), SizeBytes=$($msiFile.Length)"
+              $msiReady = $false
             }
           }
 
@@ -312,8 +305,8 @@ jobs:
           # Functional verification: portable zip -> offline payload -> openclaw gateway reachable.
           node scripts/test-windows-portable-install.mjs src-tauri/target/release/bundle/portable/openclaw-desktop-windows-portable.zip
 
-          if (-not $nsisReady) {
-            Write-Output "::warning title=NSIS fallback::NSIS setup is unavailable or suspiciously small; validated portable zip artifact is still published."
+          if (-not $msiReady) {
+            Write-Output "::warning title=MSI fallback::MSI installer is unavailable or suspiciously small; validated portable zip artifact is still published."
           }
 
       - name: Build installers (Linux)
@@ -339,7 +332,7 @@ jobs:
           name: bundle-windows
           if-no-files-found: error
           path: |
-            src-tauri/target/release/bundle/nsis/*
+            src-tauri/target/release/bundle/msi/*
             src-tauri/target/release/bundle/portable/*.zip
 
       - name: Upload Linux artifacts
