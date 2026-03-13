@@ -6,6 +6,7 @@ import type {
   BootstrapStatus,
   CodexConnectivityStatus,
   CodexAuthStatus,
+  FeishuChannelStatus,
   LocalCodexReuseResult,
   LocalOAuthToolStatus,
   OpenOfficialWebResult,
@@ -423,5 +424,42 @@ export const openclawBridge: OpenClawBridge = {
     }
 
     return invoke<CodexConnectivityStatus>("validate_local_codex_connectivity");
+  },
+
+  async getFeishuChannelStatus() {
+    if (!isTauriRuntime()) {
+      return {
+        pluginInstalled: false,
+        channelEnabled: false,
+        hasCredentials: false,
+        appId: ""
+      } satisfies FeishuChannelStatus;
+    }
+    return invoke<FeishuChannelStatus>("get_feishu_channel_status");
+  },
+
+  async installFeishuPlugin() {
+    if (!isTauriRuntime()) {
+      return {
+        pluginInstalled: false,
+        channelEnabled: false,
+        hasCredentials: false,
+        appId: "",
+        error: "Native runtime required"
+      } satisfies FeishuChannelStatus;
+    }
+    return invoke<FeishuChannelStatus>("install_feishu_plugin");
+  },
+
+  async saveFeishuChannelConfig(appId: string, appSecret: string) {
+    if (!isTauriRuntime()) {
+      return {
+        pluginInstalled: false,
+        channelEnabled: false,
+        hasCredentials: false,
+        appId: ""
+      } satisfies FeishuChannelStatus;
+    }
+    return invoke<FeishuChannelStatus>("save_feishu_channel_config", { appId, appSecret });
   }
 };

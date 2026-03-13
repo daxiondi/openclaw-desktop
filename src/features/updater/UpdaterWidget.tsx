@@ -138,7 +138,13 @@ export default function UpdaterWidget({ onStatus }: Props) {
 
       {phase === "none" ? <span className="hint">{t("update.none")}</span> : null}
       {phase === "downloading" ? <span className="hint">{progressText || t("update.downloading")}</span> : null}
-      {phase === "error" ? <span className="status-chip warn">{errorText || t("status.update.failed")}</span> : null}
+      {phase === "error" ? (
+        <>
+          <span className="status-chip warn">{errorText || t("status.update.failed")}</span>
+          <span className="hint">{t("update.mirror.fail.hint")}</span>
+        </>
+      ) : null}
+      {phase === "idle" || phase === "none" ? <span className="hint">{t("update.mirror.hint")}</span> : null}
     </div>
   );
 }

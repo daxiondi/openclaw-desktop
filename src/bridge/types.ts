@@ -113,6 +113,14 @@ export type BrowserRelayDiagnostic = {
   commandHint: string;
 };
 
+export type FeishuChannelStatus = {
+  pluginInstalled: boolean;
+  channelEnabled: boolean;
+  hasCredentials: boolean;
+  appId: string;
+  error?: string;
+};
+
 export type OpenClawBridge = {
   listOAuthProviders: () => Promise<OAuthProvider[]>;
   detectLocalOAuthTools: () => Promise<LocalOAuthToolStatus[]>;
@@ -138,4 +146,7 @@ export type OpenClawBridge = {
   detectLocalCodexAuth: () => Promise<CodexAuthStatus>;
   reuseLocalCodexAuth: (setDefaultModel?: boolean) => Promise<LocalCodexReuseResult>;
   validateLocalCodexConnectivity: () => Promise<CodexConnectivityStatus>;
+  getFeishuChannelStatus: () => Promise<FeishuChannelStatus>;
+  installFeishuPlugin: () => Promise<FeishuChannelStatus>;
+  saveFeishuChannelConfig: (appId: string, appSecret: string) => Promise<FeishuChannelStatus>;
 };

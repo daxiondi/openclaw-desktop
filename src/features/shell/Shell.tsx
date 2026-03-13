@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { openclawBridge } from "../../bridge/openclawBridge";
-import type { BrowserModeStatus, BrowserRelayDiagnostic, BrowserRelayStatus } from "../../bridge/types";
+import type { BrowserModeStatus, BrowserRelayDiagnostic, BrowserRelayStatus, FeishuChannelStatus } from "../../bridge/types";
 import feedbackGroupQr from "../../assets/wechat.jpg";
 
 type Props = {
@@ -9,13 +9,13 @@ type Props = {
   onBack: () => void;
 };
 
-type ShellTab = "help" | "official" | "settings";
+type ShellTab = "help" | "official" | "settings" | "feishu";
 
 const officialWebFallbackUrl = "http://127.0.0.1:18789/";
 
 export default function Shell({ onStatus, onBack }: Props) {
   const { t } = useTranslation();
-  const [activeTab, setActiveTab] = useState<ShellTab>("help");
+  const [activeTab, setActiveTab] = useState<ShellTab>("settings");
   const [officialWebUrl, setOfficialWebUrl] = useState(officialWebFallbackUrl);
   const [officialReady, setOfficialReady] = useState(false);
   const [officialLoading, setOfficialLoading] = useState(false);
@@ -32,6 +32,13 @@ export default function Shell({ onStatus, onBack }: Props) {
   const [relayError, setRelayError] = useState("");
   const [relayDiagnosing, setRelayDiagnosing] = useState(false);
   const [relayDiagnostic, setRelayDiagnostic] = useState<BrowserRelayDiagnostic | null>(null);
+  const [feishuStatus, setFeishuStatus] = useState<FeishuChannelStatus | null>(null);
+  const [feishuLoading, setFeishuLoading] = useState(false);
+  const [feishuInstalling, setFeishuInstalling] = useState(false);
+  const [feishuSaving, setFeishuSaving] = useState(false);
+  const [feishuError, setFeishuError] = useState("");
+  const [feishuAppId, setFeishuAppId] = useState("");
+  const [feishuAppSecret, setFeishuAppSecret] = useState("");
 
   async function ensureOfficialWebReady() {
     setOfficialLoading(true);
@@ -177,6 +184,70 @@ export default function Shell({ onStatus, onBack }: Props) {
     }
   }
 
+  async function loadFeishuStatus() {
+    setFeishuLoading(true);
+    setFeishuError("");
+    try {
+      const result = await openclawBridge.getFeishuChannelStatus();
+      setFeishuStatus(result);
+      if (result.appId) {
+        setFeishuAppId(result.appId);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setFeishuError(message);
+      onStatus(`${t("status.error")}: ${message}`);
+    } finally {
+      setFeishuLoading(false);
+    }
+  }
+
+  async function installFeishu() {
+    setFeishuInstalling(true);
+    setFeishuError("");
+    try {
+      const result = await openclawBridge.installFeishuPlugin();
+      setFeishuStatus(result);
+      if (result.error) {
+        setFeishuError(result.error);
+      } else {
+        onStatus(t("status.shell.feishu.installed"));
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setFeishuError(message);
+      onStatus(`${t("status.error")}: ${message}`);
+    } finally {
+      setFeishuInstalling(false);
+    }
+  }
+
+  async function saveFeishuConfig() {
+    setFeishuSaving(true);
+    setFeishuError("");
+    try {
+      const result = await openclawBridge.saveFeishuChannelConfig(feishuAppId, feishuAppSecret);
+      setFeishuStatus(result);
+      setFeishuAppSecret("");
+      if (result.error) {
+        setFeishuError(result.error);
+      } else {
+        onStatus(t("status.shell.feishu.saved"));
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setFeishuError(message);
+      onStatus(`${t("status.error")}: ${message}`);
+    } finally {
+      setFeishuSaving(false);
+    }
+  }
+
+  function switchToFeishuTab() {
+    setActiveTab("feishu");
+    onStatus(t("status.shell.feishu"));
+  }
+
   function switchToHelpTab() {
     setActiveTab("help");
     onStatus(t("status.shell.help"));
@@ -201,10 +272,11 @@ export default function Shell({ onStatus, onBack }: Props) {
   }
 
   useEffect(() => {
-    switchToHelpTab();
+    switchToSettingsTab();
     void ensureOfficialWebReady();
     void loadBrowserModeStatus();
     void loadRelayStatus();
+    void loadFeishuStatus();
   }, []);
 
   return (
@@ -230,6 +302,13 @@ export default function Shell({ onStatus, onBack }: Props) {
           onClick={switchToSettingsTab}
         >
           {t("shell.tab.settings")}
+        </button>
+        <button
+          type="button"
+          className={`shell-tab ${activeTab === "feishu" ? "is-active" : ""}`}
+          onClick={switchToFeishuTab}
+        >
+          {t("shell.tab.feishu")}
         </button>
         <div className="shell-spacer" />
         <button type="button" onClick={onBack}>
@@ -351,6 +430,75 @@ export default function Shell({ onStatus, onBack }: Props) {
               </button>
               <button type="button" onClick={() => void ensureOfficialWebReady()} disabled={officialLoading || officialOpening}>
                 {t("shell.official.retry")}
+              </button>
+            </div>
+          </div>
+        ) : activeTab === "feishu" ? (
+          <div className="shell-custom panel">
+            <h2>{t("shell.feishu.title")}</h2>
+            <p>{t("shell.feishu.desc")}</p>
+
+            {feishuLoading ? <div className="status-chip">{t("status.loading")}</div> : null}
+            {feishuError ? <div className="status-chip warn">{feishuError}</div> : null}
+
+            <section className="help-block">
+              <h3>{t("shell.feishu.plugin.status")}</h3>
+              <div className={`status-chip ${feishuStatus?.pluginInstalled ? "success" : "warn"}`}>
+                {feishuStatus?.pluginInstalled ? t("shell.feishu.plugin.installed") : t("shell.feishu.plugin.notInstalled")}
+              </div>
+              {!feishuStatus?.pluginInstalled ? (
+                <div className="action-row">
+                  <button
+                    type="button"
+                    className="primary"
+                    onClick={() => void installFeishu()}
+                    disabled={feishuInstalling || feishuLoading}
+                  >
+                    {feishuInstalling ? t("shell.feishu.plugin.installing") : t("shell.feishu.plugin.install")}
+                  </button>
+                </div>
+              ) : null}
+
+              <p className="hint">
+                {t("shell.feishu.credentials")}: {feishuStatus?.hasCredentials ? t("shell.feishu.credentials.configured") : t("shell.feishu.credentials.missing")}
+              </p>
+              <p className="hint">
+                {feishuStatus?.channelEnabled ? t("shell.feishu.channel.enabled") : t("shell.feishu.channel.disabled")}
+              </p>
+            </section>
+
+            <section className="help-block">
+              <label className="field-label">
+                {t("shell.feishu.appId")}
+                <input
+                  type="text"
+                  value={feishuAppId}
+                  onChange={(e) => setFeishuAppId(e.target.value)}
+                  placeholder={t("shell.feishu.appId.placeholder")}
+                />
+              </label>
+              <label className="field-label">
+                {t("shell.feishu.appSecret")}
+                <input
+                  type="password"
+                  value={feishuAppSecret}
+                  onChange={(e) => setFeishuAppSecret(e.target.value)}
+                  placeholder={t("shell.feishu.appSecret.placeholder")}
+                />
+              </label>
+            </section>
+
+            <div className="action-row">
+              <button
+                type="button"
+                className="primary"
+                onClick={() => void saveFeishuConfig()}
+                disabled={feishuSaving || feishuLoading || !feishuAppId.trim() || !feishuAppSecret.trim()}
+              >
+                {feishuSaving ? t("shell.feishu.saving") : t("shell.feishu.save")}
+              </button>
+              <button type="button" onClick={() => void loadFeishuStatus()} disabled={feishuLoading}>
+                {t("shell.feishu.refresh")}
               </button>
             </div>
           </div>

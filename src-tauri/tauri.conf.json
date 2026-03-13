@@ -1,7 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "openclaw-desktop",
-  "version": "0.1.35",
+
+  "version": "0.1.36",
   "identifier": "com.openclaw.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -51,7 +52,8 @@
   "plugins": {
     "updater": {
       "endpoints": [
-        "https://github.com/daxiondi/openclaw-desktop/releases/latest/download/latest.json"
+        "https://github.com/daxiondi/openclaw-desktop/releases/latest/download/latest.json",
+        "https://ghfast.top/https://github.com/daxiondi/openclaw-desktop/releases/latest/download/latest.json"
       ],
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDgzMjgzNUE0RUQ2QTk5OEYKUldTUG1XcnRwRFVvZzNZV2ZGTVNEZzdJb0puOXRndzl2dGF1NjMyRlM3dTh0dUlwNlJzaDZEM2kK",
       "windows": {

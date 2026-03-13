@@ -96,6 +96,16 @@ struct CodexAuthStatus {
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
+struct FeishuChannelStatus {
+    plugin_installed: bool,
+    channel_enabled: bool,
+    has_credentials: bool,
+    app_id: String,
+    error: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 struct CodexConnectivityStatus {
     ok: bool,
     expected: String,
@@ -952,7 +962,7 @@ fn ensure_browser_defaults(
         push_bootstrap_log(
             app,
             logs,
-            "Browser detection: no local Chromium-based browser found.",
+            "Browser detection: no local Chromium-based browser found. Please install Google Chrome or another Chromium-based browser manually, then restart the app.",
         );
     } else {
         let summary = candidates
@@ -3661,7 +3671,19 @@ async fn bootstrap_openclaw(app: tauri::AppHandle) -> BootstrapStatus {
             format!("WARN: failed to ensure browser defaults: {}", error),
         );
     }
-    ensure_browser_relay_installed(&app, &binary, &mut logs);
+    // Only install browser relay extension when using chrome profile mode (relay is not needed for openclaw profile mode)
+    {
+        let config_value = load_openclaw_config_value();
+        let default_profile = config_value
+            .pointer("/browser/defaultProfile")
+            .and_then(|v| v.as_str())
+            .unwrap_or("openclaw");
+        if default_profile.eq_ignore_ascii_case("chrome") {
+            ensure_browser_relay_installed(&app, &binary, &mut logs);
+        } else {
+            push_bootstrap_log(&app, &mut logs, "Browser relay skipped (profile mode, relay not needed).");
+        }
+    }
 
     if installed_before && !install_performed {
         push_bootstrap_log(&app, &mut logs, "Checking existing gateway status...");
@@ -4375,6 +4397,105 @@ fn validate_local_codex_connectivity() -> CodexConnectivityStatus {
     }
 }
 
+#[tauri::command]
+fn get_feishu_channel_status() -> Result<FeishuChannelStatus, String> {
+    let binary = resolve_openclaw_binary()
+        .ok_or_else(|| "OpenClaw binary not found.".to_string())?;
+
+    let plugin_installed = match run_command(&binary, &["plugins", "list"]) {
+        Ok((_, output)) => output.contains("openclaw-lark"),
+        Err(_) => false,
+    };
+
+    let config_value = load_openclaw_config_value();
+    let channel_enabled = config_value
+        .pointer("/channels/feishu/enabled")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let app_id = config_value
+        .pointer("/channels/feishu/accounts/main/appId")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let has_credentials = !app_id.is_empty();
+
+    Ok(FeishuChannelStatus {
+        plugin_installed,
+        channel_enabled,
+        has_credentials,
+        app_id,
+        error: None,
+    })
+}
+
+#[tauri::command]
+fn install_feishu_plugin() -> Result<FeishuChannelStatus, String> {
+    let binary = resolve_openclaw_binary()
+        .ok_or_else(|| "OpenClaw binary not found.".to_string())?;
+
+    // Disable stock feishu plugin (ignore failure)
+    let _ = run_command(&binary, &["plugins", "disable", "feishu"]);
+
+    // Install official lark plugin
+    match run_command(&binary, &["plugins", "install", "@larksuite/openclaw-lark"]) {
+        Ok((true, _)) => {}
+        Ok((false, output)) => {
+            return Err(format!("Failed to install @larksuite/openclaw-lark: {}", output));
+        }
+        Err(err) => {
+            return Err(format!("Failed to install @larksuite/openclaw-lark: {}", err));
+        }
+    }
+
+    get_feishu_channel_status()
+}
+
+#[tauri::command]
+fn save_feishu_channel_config(app_id: String, app_secret: String) -> Result<FeishuChannelStatus, String> {
+    let app_id_trimmed = app_id.trim().to_string();
+    let app_secret_trimmed = app_secret.trim().to_string();
+
+    if app_id_trimmed.is_empty() || app_secret_trimmed.is_empty() {
+        return Err("appId and appSecret must not be empty.".to_string());
+    }
+
+    let mut config_value = load_openclaw_config_value();
+    if !config_value.is_object() {
+        config_value = serde_json::json!({});
+    }
+
+    let config_obj = config_value
+        .as_object_mut()
+        .ok_or_else(|| "Failed to parse OpenClaw config root object.".to_string())?;
+
+    let channels_entry = config_obj
+        .entry("channels".to_string())
+        .or_insert_with(|| serde_json::json!({}));
+    if !channels_entry.is_object() {
+        *channels_entry = serde_json::json!({});
+    }
+
+    let channels_obj = channels_entry
+        .as_object_mut()
+        .ok_or_else(|| "Failed to parse channels object.".to_string())?;
+
+    channels_obj.insert("feishu".to_string(), serde_json::json!({
+        "enabled": true,
+        "connectionMode": "webhook",
+        "dmPolicy": "allow",
+        "groupPolicy": "allow",
+        "accounts": {
+            "main": {
+                "appId": app_id_trimmed,
+                "appSecret": app_secret_trimmed
+            }
+        }
+    }));
+
+    save_openclaw_config_value(&config_value)?;
+    get_feishu_channel_status()
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_process::init())
@@ -4398,7 +4519,10 @@ fn main() {
             detect_local_codex_auth,
             reuse_local_codex_auth,
             detect_local_oauth_tools,
-            validate_local_codex_connectivity
+            validate_local_codex_connectivity,
+            get_feishu_channel_status,
+            install_feishu_plugin,
+            save_feishu_channel_config
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
