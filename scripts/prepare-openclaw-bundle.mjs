@@ -13,7 +13,7 @@ const workspaceRoot = path.resolve(desktopRoot, "..");
 const openclawRoot = path.resolve(workspaceRoot, "openclaw");
 const bundleDir = path.resolve(desktopRoot, "src-tauri", "bundle", "resources", "openclaw-bundle");
 const tempDir = path.resolve(desktopRoot, ".tmp", "openclaw-bundle");
-const OPENCLAW_MIN_NODE = "22.12.0";
+const OPENCLAW_MIN_NODE = "22.16.0";
 const RUN_MAX_BUFFER = Number(process.env.OPENCLAW_BUNDLE_RUN_MAX_BUFFER || 128 * 1024 * 1024);
 const REQUESTED_NODE_ARCH = normalizeNodeArch(process.env.OPENCLAW_BUNDLE_NODE_ARCH);
 
